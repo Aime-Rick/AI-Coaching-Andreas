@@ -1,5 +1,12 @@
 ai_coaching.db
 test_setup.py
+CHAT_MEMORY_README.md
+integrated_demo.py
+INTEGRATION_README.md
+replit_app_storage_doc.md
+test_integration.py
+test_file_management.py
+chat_demo.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
