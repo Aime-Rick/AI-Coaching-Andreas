@@ -7,6 +7,7 @@ from typing import Optional, List, Dict
 from backend.database.connection import get_db, create_tables
 from backend.database.chat_memory import ChatMemoryService
 from backend.database.models import ChatMessage
+from backend.assistant.utils import create_vector_store, create_vector_store_from_files, delete_vector_store
 
 load_dotenv()
 
@@ -225,3 +226,48 @@ def update_session_title(session_id: str, title: str) -> bool:
     result = memory_service.update_session_title(session_id, title)
     db.close()
     return result
+
+# Vector Store Management Functions
+
+def create_vector_store_from_folder(folder_path: str, store_name: Optional[str] = None) -> str:
+    """
+    Create a vector store from all files in a folder
+    
+    Args:
+        folder_path: Path to folder in file management system (e.g., "documents/client_files")
+        store_name: Optional custom name for the vector store
+    
+    Returns:
+        Vector store ID
+    """
+    return create_vector_store(folder_path, store_name)
+
+def create_vector_store_from_file_list(file_paths: List[str], store_name: Optional[str] = None) -> str:
+    """
+    Create a vector store from a list of specific files
+    
+    Args:
+        file_paths: List of file paths in the file management system
+        store_name: Optional custom name for the vector store
+    
+    Returns:
+        Vector store ID
+    """
+    return create_vector_store_from_files(file_paths, store_name)
+
+def remove_vector_store(vector_store_id: str) -> bool:
+    """
+    Delete a vector store
+    
+    Args:
+        vector_store_id: ID of the vector store to delete
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        delete_vector_store(vector_store_id)
+        return True
+    except Exception as e:
+        print(f"Error deleting vector store {vector_store_id}: {str(e)}")
+        return False
