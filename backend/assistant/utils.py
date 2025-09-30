@@ -8,7 +8,7 @@ load_dotenv()
 from backend.files.utils import FileManager
 
 client = OpenAI()
-file_manager = FileManager()
+file_manager = FileManager(skip_validation=True)  # Skip S3 validation for development
 
 
 def create_vector_store(folder_path: str, store_name: Optional[str] = None) -> str:

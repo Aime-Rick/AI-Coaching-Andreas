@@ -43,7 +43,7 @@ class CreateFolderRequest(BaseModel):
     parent_path: Optional[str] = Field(None, description="Parent directory path (optional)")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "folder_name": "my_documents",
                 "parent_path": "projects/2024"
@@ -57,7 +57,7 @@ class DeleteRequest(BaseModel):
     recursive: bool = Field(False, description="Whether to delete folders recursively")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "path": "documents/old_files",
                 "recursive": True
@@ -71,7 +71,7 @@ class UploadResponse(BaseModel):
     file_info: FileInfo = Field(..., description="Information about the uploaded file")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "message": "File uploaded successfully",
                 "file_info": {
@@ -94,7 +94,7 @@ class FileListResponse(BaseModel):
     total_count: int = Field(..., description="Total number of items")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "path": "documents",
                 "files": [
@@ -127,7 +127,7 @@ class SearchRequest(BaseModel):
     case_sensitive: bool = Field(False, description="Whether search is case sensitive")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query": "report",
                 "path": "documents/2024",
@@ -145,7 +145,7 @@ class SearchResponse(BaseModel):
     search_path: Optional[str] = Field(None, description="Path searched in")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query": "report",
                 "results": [
@@ -172,7 +172,7 @@ class CopyMoveRequest(BaseModel):
     overwrite: bool = Field(False, description="Whether to overwrite existing files")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "source_path": "documents/old_location/file.txt",
                 "destination_path": "documents/new_location/file.txt",
@@ -184,12 +184,12 @@ class CopyMoveRequest(BaseModel):
 class BatchOperationRequest(BaseModel):
     """Request model for batch operations"""
     paths: List[str] = Field(..., description="List of paths to operate on", min_items=1)
-    operation: str = Field(..., description="Operation to perform", regex="^(delete|copy|move)$")
+    operation: str = Field(..., description="Operation to perform", pattern="^(delete|copy|move)$")
     destination_path: Optional[str] = Field(None, description="Destination path for copy/move operations")
     recursive: bool = Field(False, description="Whether to operate recursively on folders")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "paths": ["file1.txt", "file2.txt", "folder1"],
                 "operation": "delete",
@@ -206,7 +206,7 @@ class BatchOperationResponse(BaseModel):
     error_count: int = Field(..., description="Number of failed operations")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "operation": "delete",
                 "results": [
@@ -228,7 +228,7 @@ class StorageStats(BaseModel):
     most_common_type: Optional[str] = Field(None, description="Most common file type")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "total_files": 150,
                 "total_size": 104857600,
@@ -255,7 +255,7 @@ class PreviewResponse(BaseModel):
     error: Optional[str] = Field(None, description="Error message if preview not available")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "content": "This is the beginning of the text file...",
                 "content_type": "text/plain",

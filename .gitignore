@@ -7,6 +7,8 @@ replit_app_storage_doc.md
 test_integration.py
 test_file_management.py
 chat_demo.py
+api_usage_example.py
+session_lifecycle_demo.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

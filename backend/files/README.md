@@ -1,6 +1,6 @@
-# File Management System for Replit App Storage
+# File Management System for AWS S3
 
-A comprehensive file explorer and management system built for Replit App Storage, providing all the essential features of a modern file manager.
+A comprehensive file explorer and management system built for AWS S3, providing all the essential features of a modern file manager.
 
 ## Features
 
@@ -64,7 +64,8 @@ pip install -r requirements.txt
 2. The main dependencies include:
 - `fastapi` - Modern web framework
 - `uvicorn` - ASGI server
-- `replit-object-storage` - Replit App Storage SDK
+- `boto3` - AWS SDK for Python
+- `botocore` - AWS SDK core libraries
 - `pydantic` - Data validation
 - `python-multipart` - File upload support
 
@@ -119,8 +120,13 @@ curl "http://localhost:8000/storage/stats"
 ```python
 from files import FileManager, CreateFolderRequest
 
-# Initialize file manager
-file_manager = FileManager()
+# Initialize file manager with S3 credentials
+file_manager = FileManager(
+    aws_access_key_id="your_access_key",
+    aws_secret_access_key="your_secret_key", 
+    aws_region="us-east-1",
+    bucket_name="your-bucket-name"
+)
 
 # Create a folder
 folder_path = file_manager.create_folder("my_project", "documents")
@@ -162,12 +168,21 @@ The API provides comprehensive error handling with appropriate HTTP status codes
 
 All errors return a structured JSON response with detailed error messages.
 
+## Limitations
+
+- File paths are case-sensitive
+- Maximum file size depends on S3 limits (5GB per PUT operation, 5TB with multipart upload)
+- Folder operations simulate traditional file systems using placeholder files
+- AWS credentials must be properly configured for access
+- S3 bucket must exist and be accessible with provided credentials
+
 ## Security Considerations
 
-- File names are validated to prevent path traversal attacks
-- File size limits can be configured
-- Hidden files are handled appropriately
-- Proper error handling prevents information leakage
+- Always use IAM roles or access keys with minimal required permissions
+- Enable S3 bucket versioning for data protection
+- Consider using S3 bucket policies to restrict access
+- Use HTTPS endpoints for data encryption in transit
+- Enable S3 server-side encryption for data at rest
 
 ## Supported File Types
 
@@ -180,11 +195,36 @@ The system supports all file types with automatic MIME type detection:
 - **Code**: PY, JS, HTML, CSS, JSON, XML
 - **And many more...**
 
-## Limitations
+## Configuration
 
-- Maximum file size depends on Replit App Storage limits
-- Folder operations are simulated using placeholder files
-- Some metadata (like file modification times) may be limited by the storage backend
+### Environment Variables
+
+The application requires AWS credentials and S3 configuration. You can provide these via environment variables:
+
+```bash
+# AWS Credentials
+export AWS_ACCESS_KEY_ID=your_access_key_here
+export AWS_SECRET_ACCESS_KEY=your_secret_key_here
+export AWS_REGION=us-east-1
+
+# S3 Configuration
+export S3_BUCKET_NAME=your-bucket-name
+export S3_ENDPOINT_URL=https://s3.amazonaws.com  # Optional: for S3-compatible services
+```
+
+### Alternative Configuration
+
+You can also pass credentials directly when initializing the FileManager:
+
+```python
+file_manager = FileManager(
+    aws_access_key_id="your_access_key",
+    aws_secret_access_key="your_secret_key",
+    aws_region="us-east-1", 
+    bucket_name="your-bucket-name",
+    endpoint_url="https://s3.amazonaws.com"  # Optional
+)
+```
 
 ## Contributing
 
@@ -197,4 +237,11 @@ This file management system is designed to be modular and extensible. Key areas 
 
 ## Support
 
-For issues or questions, please refer to the Replit App Storage documentation or create an issue in the project repository.
+For issues or questions, please refer to the AWS S3 documentation or create an issue in the project repository.
+
+### Useful Links
+
+- [AWS S3 Documentation](https://docs.aws.amazon.com/s3/)
+- [Boto3 Documentation](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)
+- [S3 API Reference](https://docs.aws.amazon.com/s3/latest/API/)
+- [AWS S3 Pricing](https://aws.amazon.com/s3/pricing/)
