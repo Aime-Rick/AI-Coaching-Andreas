@@ -9,5 +9,5 @@ pydantic
 fastapi
 uvicorn[standard]
 python-multipart
-replit-object-storage
-replit
+boto3
+botocore

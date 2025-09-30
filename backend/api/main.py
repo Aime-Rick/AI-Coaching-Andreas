@@ -1,5 +1,5 @@
 """
-File Management System for Replit App Storage
+File Management System for AWS S3
 Provides comprehensive file and folder management capabilities.
 """
 
@@ -106,7 +106,7 @@ app.add_middleware(
 )
 
 # Initialize file manager
-file_manager = FileManager()
+file_manager = FileManager(skip_validation=True)  # Skip S3 validation for development
 
 # Pydantic models for chat and report endpoints
 class ChatRequest(BaseModel):
@@ -177,7 +177,7 @@ async def root():
     return {
         "message": "File Management API",
         "version": "1.0.0",
-        "description": "Comprehensive file explorer for Replit App Storage"
+        "description": "Comprehensive file explorer for AWS S3"
     }
 
 
