@@ -1,0 +1,227 @@
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain_core.runnables import Runnable
+import os
+from dotenv import load_dotenv
+from typing import Optional, List, Dict
+from backend.database.connection import get_db, create_tables
+from backend.database.chat_memory import ChatMemoryService
+from backend.database.models import ChatMessage
+
+load_dotenv()
+
+# Initialize database
+create_tables()
+
+llm = ChatOpenAI(model="gpt-5-mini", 
+                 max_completion_tokens=20000, 
+                 organization="Andreas Project",
+                 api_key=os.getenv("OPENAI_API_KEY"))
+
+chat_prompt="""
+You are an AI assistant designed to answer user queries using the provided context documents.  
+
+## Rules
+1. Always prioritize the information found in the retrieved documents when generating responses.  
+2. If the answer is clearly present in the documents, respond concisely and accurately based only on that content.  
+3. If the documents contain partial or ambiguous information, acknowledge the uncertainty and provide the most relevant parts without inventing facts.  
+4. If no useful information is found in the documents, explicitly state that the answer is not available in the provided context. Do **not** hallucinate.  
+5. Maintain a clear, helpful, and professional tone.  
+6. If the user asks questions outside the scope of the documents, politely explain that you can only respond based on the provided materials.  
+
+## Output Format
+- Directly answer the user’s question.    
+"""
+
+report_prompt = """
+You are an expert health and wellness coaching assistant.  
+Your role is to analyze client anamnesis documents (covering weight, goals, illnesses, medications, sleep, digestion, hormones, lifestyle, etc.) and generate a **structured report** for the coach.  
+
+The report must include:
+1. **Summary of the client’s situation** — provide a clear, professional overview of their health status, challenges, and goals.  
+2. **Key priorities for coaching** — suggest the most important areas to focus on first (e.g., lifestyle habits, nutrition, sleep, stress management, etc.), with reasoning behind the order of priorities.  
+3. **Clarity and structure** — use headings, bullet points, and concise explanations. Keep the tone professional, supportive, and actionable.  
+
+Do not give medical diagnoses. Instead, highlight coaching priorities and suggestions that support the client in achieving their goals.
+"""
+
+report_query="""
+You have been provided with the client anamnesis documents.
+Please generate a structured coaching report that includes:  
+- A clear summary of the client’s current situation.  
+- Suggested coaching priorities, listed in order of importance, with short explanations for each.  """
+
+report_messages = [{"role": "system", "content": report_prompt},
+                {"role": "user", "content": report_query}]
+
+def generate_chat_response(message: str, vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
+    """
+    Generate a chat response with memory management.
+    
+    Args:
+        message: User's message
+        vector_store_id: ID of the vector store for document context
+        session_id: Optional existing session ID
+        user_id: Optional user identifier
+    
+    Returns:
+        Dict with response, session_id, and message details
+    """
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    # Create new session if none provided
+    if not session_id:
+        session_id = memory_service.create_session(
+            user_id=user_id,
+            vector_store_id=vector_store_id,
+            title=f"Chat about: {message[:50]}..."
+        )
+    
+    # Get chat history for context
+    chat_history = memory_service.get_recent_messages(session_id, limit=10)
+    
+    # Build messages with history
+    messages = [{"role": "system", "content": chat_prompt}]
+    
+    # Add chat history
+    for hist_msg in chat_history:
+        messages.append({
+            "role": hist_msg.role,
+            "content": hist_msg.content
+        })
+    
+    # Add current user message
+    messages.append({"role": "user", "content": message})
+    
+    # Save user message to database
+    memory_service.add_message(session_id, "user", message, "chat")
+    
+    # Generate response
+    tools = [
+        {
+            "type": "file_search",
+            "vector_store_ids": [vector_store_id]
+        }
+    ]
+    model_with_tools = llm.bind_tools(tools)
+    
+    response = model_with_tools.invoke(messages)
+    response_content = response.content
+    
+    # Save assistant response to database
+    # Note: You might want to calculate actual tokens used here
+    memory_service.add_message(session_id, "assistant", response_content, "chat")
+    
+    db.close()
+    
+    return {
+        "response": response_content,
+        "session_id": session_id,
+        "message_count": len(chat_history) + 2  # +2 for current user message and response
+    }
+
+
+def generate_report(vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
+    """
+    Generate a coaching report with memory management.
+    
+    Args:
+        vector_store_id: ID of the vector store for document context
+        session_id: Optional existing session ID
+        user_id: Optional user identifier
+    
+    Returns:
+        Dict with report content, session_id, and details
+    """
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    # Create new session if none provided
+    if not session_id:
+        session_id = memory_service.create_session(
+            user_id=user_id,
+            vector_store_id=vector_store_id,
+            title="Coaching Report Generation"
+        )
+    
+    # Save the report generation request
+    memory_service.add_message(session_id, "user", report_query, "report")
+    
+    # Bind tools to the model
+    tools = [
+        {
+            "type": "file_search",
+            "vector_store_ids": [vector_store_id]
+        }
+    ]
+    model_with_tools = llm.bind_tools(tools)
+
+    response = model_with_tools.invoke(report_messages)
+    report_content = response.content
+    
+    # Save the report to database
+    memory_service.add_message(session_id, "assistant", report_content, "report")
+    
+    db.close()
+    
+    return {
+        "report": report_content,
+        "session_id": session_id,
+        "type": "report"
+    }
+
+# Additional helper functions for chat management
+
+def get_chat_sessions(user_id: str, limit: int = 50) -> List[Dict]:
+    """Get all chat sessions for a user"""
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    sessions = memory_service.get_user_sessions(user_id, limit)
+    
+    result = []
+    for session in sessions:
+        stats = memory_service.get_session_stats(session.session_id)
+        result.append(stats)
+    
+    db.close()
+    return result
+
+def get_chat_history(session_id: str) -> List[Dict]:
+    """Get full chat history for a session"""
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    messages = memory_service.get_chat_history(session_id)
+    
+    result = []
+    for msg in messages:
+        result.append({
+            "role": msg.role,
+            "content": msg.content,
+            "message_type": msg.message_type,
+            "timestamp": msg.timestamp.isoformat(),
+            "tokens_used": msg.tokens_used
+        })
+    
+    db.close()
+    return result
+
+def delete_chat_session(session_id: str) -> bool:
+    """Delete a chat session"""
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    result = memory_service.delete_session(session_id)
+    db.close()
+    return result
+
+def update_session_title(session_id: str, title: str) -> bool:
+    """Update a session's title"""
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    result = memory_service.update_session_title(session_id, title)
+    db.close()
+    return result

@@ -1,0 +1,9 @@
+openai
+python-dotenv
+tempfile
+langchain-openai
+langchain
+sqlalchemy
+psycopg2-binary
+alembic
+pydantic
