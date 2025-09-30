@@ -1,0 +1,1 @@
+# Assistant module for AI Coaching Andreas

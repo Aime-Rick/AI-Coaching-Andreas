@@ -62,7 +62,7 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
     Args:
         message: User's message
         vector_store_id: ID of the vector store for document context
-        session_id: Optional existing session ID
+        session_id: Optional existing session ID (required for session-managed flow)
         user_id: Optional user identifier
     
     Returns:
@@ -71,8 +71,9 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
     db = next(get_db())
     memory_service = ChatMemoryService(db)
     
-    # Create new session if none provided
+    # For session-managed flow, session_id should already exist
     if not session_id:
+        # Legacy behavior: create new session if none provided
         session_id = memory_service.create_session(
             user_id=user_id,
             vector_store_id=vector_store_id,
@@ -129,7 +130,7 @@ def generate_report(vector_store_id: str, session_id: Optional[str] = None, user
     
     Args:
         vector_store_id: ID of the vector store for document context
-        session_id: Optional existing session ID
+        session_id: Optional existing session ID (required for session-managed flow)
         user_id: Optional user identifier
     
     Returns:
@@ -138,8 +139,9 @@ def generate_report(vector_store_id: str, session_id: Optional[str] = None, user
     db = next(get_db())
     memory_service = ChatMemoryService(db)
     
-    # Create new session if none provided
+    # For session-managed flow, session_id should already exist
     if not session_id:
+        # Legacy behavior: create new session if none provided
         session_id = memory_service.create_session(
             user_id=user_id,
             vector_store_id=vector_store_id,
@@ -271,3 +273,127 @@ def remove_vector_store(vector_store_id: str) -> bool:
     except Exception as e:
         print(f"Error deleting vector store {vector_store_id}: {str(e)}")
         return False
+
+
+# Session Lifecycle Management Functions
+
+def start_chat_session(user_id: Optional[str] = None, folder_path: Optional[str] = None, file_paths: Optional[List[str]] = None, session_title: Optional[str] = None) -> Dict:
+    """
+    Start a new chat session with automatic vector store creation
+    
+    Args:
+        user_id: Optional user identifier
+        folder_path: Optional path to folder for vector store creation
+        file_paths: Optional list of file paths for vector store creation
+        session_title: Optional title for the session
+    
+    Returns:
+        Dict with session_id, vector_store_id, and success message
+    """
+    try:
+        # Create vector store first
+        if folder_path:
+            store_name = session_title or f"Session Documents - {folder_path}"
+            vector_store_id = create_vector_store_from_folder(folder_path, store_name)
+        elif file_paths:
+            store_name = session_title or f"Session Documents - {len(file_paths)} files"
+            vector_store_id = create_vector_store_from_file_list(file_paths, store_name)
+        else:
+            raise ValueError("Either folder_path or file_paths must be provided")
+        
+        # Create chat session with vector store
+        db = next(get_db())
+        memory_service = ChatMemoryService(db)
+        
+        session_title = session_title or f"Chat Session - {vector_store_id[:8]}"
+        session_id = memory_service.create_session(
+            user_id=user_id,
+            vector_store_id=vector_store_id,
+            title=session_title
+        )
+        
+        db.close()
+        
+        return {
+            "session_id": session_id,
+            "vector_store_id": vector_store_id,
+            "message": "Chat session started successfully with vector store created"
+        }
+        
+    except Exception as e:
+        # Clean up vector store if session creation fails
+        if 'vector_store_id' in locals():
+            try:
+                remove_vector_store(vector_store_id)
+            except:
+                pass
+        raise Exception(f"Failed to start chat session: {str(e)}")
+
+
+def end_chat_session(session_id: str) -> Dict:
+    """
+    End a chat session and clean up the vector store
+    
+    Args:
+        session_id: Session identifier
+    
+    Returns:
+        Dict with success message and cleanup status
+    """
+    try:
+        db = next(get_db())
+        memory_service = ChatMemoryService(db)
+        
+        # Get session to retrieve vector store ID
+        session = memory_service.get_session(session_id)
+        if not session:
+            db.close()
+            raise ValueError(f"Session not found: {session_id}")
+        
+        vector_store_id = session.vector_store_id
+        
+        # Delete the session (this will also delete all messages due to cascade)
+        success = memory_service.delete_session(session_id)
+        db.close()
+        
+        if not success:
+            raise Exception("Failed to delete session")
+        
+        # Clean up vector store if it exists
+        vector_store_deleted = False
+        if vector_store_id:
+            vector_store_deleted = remove_vector_store(vector_store_id)
+        
+        return {
+            "message": "Chat session ended successfully",
+            "vector_store_deleted": vector_store_deleted
+        }
+        
+    except Exception as e:
+        raise Exception(f"Failed to end chat session: {str(e)}")
+
+
+def get_session_vector_store(session_id: str) -> Optional[str]:
+    """
+    Get the vector store ID associated with a session
+    
+    Args:
+        session_id: Session identifier
+    
+    Returns:
+        Vector store ID if found, None otherwise
+    """
+    try:
+        db = next(get_db())
+        memory_service = ChatMemoryService(db)
+        
+        session = memory_service.get_session(session_id)
+        db.close()
+        
+        if session:
+            return session.vector_store_id
+        return None
+        
+    except Exception as e:
+        print(f"Error getting session vector store: {str(e)}")
+        return None
