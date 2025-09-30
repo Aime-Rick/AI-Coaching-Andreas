@@ -1,8 +1,7 @@
 """
 File Management System for AWS S3
 Provides comprehensive file and folder management capabilities.
-"""
-
+""" 
 from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
