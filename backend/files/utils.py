@@ -322,7 +322,8 @@ class FileManager:
         
         try:
             files = []
-            folders = set()
+            folders = []
+            seen_folders = set()  # Track folder names to avoid duplicates
             
             # Set up S3 list parameters
             list_params = {
@@ -330,6 +331,7 @@ class FileManager:
                 'Delimiter': '/'  # This helps us get "folders"
             }
             
+            # Only add prefix if we have a path (not root level)
             if path:
                 list_params['Prefix'] = f"{path}/"
             
@@ -340,15 +342,24 @@ class FileManager:
                 # Handle "folders" (common prefixes)
                 if 'CommonPrefixes' in page:
                     for prefix_info in page['CommonPrefixes']:
-                        folder_name = prefix_info['Prefix'].rstrip('/').split('/')[-1]
+                        # Get folder name - for root level, it's the first part before /
+                        if path:
+                            # For subdirectories, get the last part after removing the path prefix
+                            folder_name = prefix_info['Prefix'].rstrip('/').split('/')[-1]
+                        else:
+                            # For root level, get the first directory name
+                            folder_name = prefix_info['Prefix'].rstrip('/').split('/')[0]
+                        
                         if folder_name and (include_hidden or not folder_name.startswith('.')):
-                            folder_path = prefix_info['Prefix'].rstrip('/')
-                            folders.add(FolderInfo(
-                                name=folder_name,
-                                path=folder_path,
-                                is_folder=True,
-                                modified=datetime.now()
-                            ))
+                            if folder_name not in seen_folders:
+                                folder_path = prefix_info['Prefix'].rstrip('/')
+                                folders.append(FolderInfo(
+                                    name=folder_name,
+                                    path=folder_path,
+                                    is_folder=True,
+                                    modified=datetime.now()
+                                ))
+                                seen_folders.add(folder_name)
                 
                 # Handle files
                 if 'Contents' in page:
@@ -357,15 +368,20 @@ class FileManager:
                         if obj['Key'].endswith('.folder_placeholder'):
                             continue
                         
-                        # Skip the path itself if it's a "folder"
+                        # Skip directory markers
                         if obj['Key'].endswith('/'):
                             continue
                         
-                        # Get file name from key
+                        # Get relative file path
                         if path:
-                            # Remove the prefix to get relative path
-                            relative_key = obj['Key'][len(path)+1:] if obj['Key'].startswith(f"{path}/") else obj['Key']
+                            # For subdirectories, remove the path prefix
+                            if obj['Key'].startswith(f"{path}/"):
+                                relative_key = obj['Key'][len(path)+1:]
+                            else:
+                                # Skip files not in this directory
+                                continue
                         else:
+                            # For root level, use the full key
                             relative_key = obj['Key']
                         
                         # Skip files in subdirectories (we only want direct children)
