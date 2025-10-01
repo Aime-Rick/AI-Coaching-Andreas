@@ -16,7 +16,6 @@ create_tables()
 
 llm = ChatOpenAI(model="gpt-5-mini", 
                  max_completion_tokens=20000, 
-                 organization="Andreas Project",
                  api_key=os.getenv("OPENAI_API_KEY"))
 
 chat_prompt="""
@@ -109,7 +108,22 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
     model_with_tools = llm.bind_tools(tools)
     
     response = model_with_tools.invoke(messages)
-    response_content = response.content
+    
+    # Extract text content from response (handle both string and structured formats)
+    if isinstance(response.content, str):
+        response_content = response.content
+    elif isinstance(response.content, list):
+        # Extract text from structured content blocks
+        response_content = ""
+        for block in response.content:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                response_content += block.get('text', '')
+            elif isinstance(block, str):
+                response_content += block
+        if not response_content:
+            response_content = str(response.content)
+    else:
+        response_content = str(response.content)
     
     # Save assistant response to database
     # Note: You might want to calculate actual tokens used here
@@ -161,7 +175,22 @@ def generate_report(vector_store_id: str, session_id: Optional[str] = None, user
     model_with_tools = llm.bind_tools(tools)
 
     response = model_with_tools.invoke(report_messages)
-    report_content = response.content
+    
+    # Extract text content from response (handle both string and structured formats)
+    if isinstance(response.content, str):
+        report_content = response.content
+    elif isinstance(response.content, list):
+        # Extract text from structured content blocks
+        report_content = ""
+        for block in response.content:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                report_content += block.get('text', '')
+            elif isinstance(block, str):
+                report_content += block
+        if not report_content:
+            report_content = str(response.content)
+    else:
+        report_content = str(response.content)
     
     # Save the report to database
     memory_service.add_message(session_id, "assistant", report_content, "report")
