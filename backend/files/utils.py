@@ -256,14 +256,20 @@ class FileManager:
         if not file.filename:
             raise ValueError("File must have a filename")
         
+        print(f"DEBUG FileManager: Original path: '{path}'")  # Debug logging
+        
         # Normalize path
         path = self._normalize_path(path)
+        
+        print(f"DEBUG FileManager: Normalized path: '{path}'")  # Debug logging
         
         # Construct full file path
         if path:
             file_path = f"{path}/{file.filename}"
         else:
             file_path = file.filename
+        
+        print(f"DEBUG FileManager: Final file_path: '{file_path}'")  # Debug logging
         
         try:
             # Read file content
@@ -353,11 +359,34 @@ class FileManager:
                         if folder_name and (include_hidden or not folder_name.startswith('.')):
                             if folder_name not in seen_folders:
                                 folder_path = prefix_info['Prefix'].rstrip('/')
+                                
+                                # Count items in this folder for display
+                                item_count = 0
+                                try:
+                                    folder_list_params = {
+                                        'Bucket': self.bucket_name,
+                                        'Prefix': f"{folder_path}/",
+                                        'Delimiter': '/'
+                                    }
+                                    folder_response = self.s3_client.list_objects_v2(**folder_list_params)
+                                    
+                                    # Count files
+                                    if 'Contents' in folder_response:
+                                        item_count += len([obj for obj in folder_response['Contents'] 
+                                                         if not obj['Key'].endswith('.folder_placeholder') and not obj['Key'].endswith('/')])
+                                    
+                                    # Count subfolders
+                                    if 'CommonPrefixes' in folder_response:
+                                        item_count += len(folder_response['CommonPrefixes'])
+                                except:
+                                    pass  # Ignore errors in counting
+                                
                                 folders.append(FolderInfo(
                                     name=folder_name,
                                     path=folder_path,
                                     is_folder=True,
-                                    modified=datetime.now()
+                                    modified=datetime.now(),
+                                    item_count=item_count
                                 ))
                                 seen_folders.add(folder_name)
                 
@@ -910,8 +939,10 @@ class FileManager:
             pages = paginator.paginate(Bucket=self.bucket_name)
             
             total_files = 0
+            total_folders = 0
             total_size = 0
             file_types = {}
+            unique_folders = set()
             
             for page in pages:
                 if 'Contents' in page:
@@ -934,9 +965,17 @@ class FileManager:
                             file_types[extension] = file_types.get(extension, 0) + 1
                         else:
                             file_types['no_extension'] = file_types.get('no_extension', 0) + 1
+                        
+                        # Count unique folder paths
+                        folder_path = '/'.join(obj['Key'].split('/')[:-1])
+                        if folder_path:
+                            unique_folders.add(folder_path)
+            
+            total_folders = len(unique_folders)
             
             return {
                 "total_files": total_files,
+                "total_folders": total_folders,
                 "total_size": total_size,
                 "total_size_mb": round(total_size / (1024*1024), 2),
                 "file_types": file_types,

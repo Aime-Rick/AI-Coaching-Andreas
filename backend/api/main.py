@@ -2,7 +2,7 @@
 File Management System for AWS S3
 Provides comprehensive file and folder management capabilities.
 """ 
-from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
+from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
@@ -208,7 +208,7 @@ async def create_folder(request: CreateFolderRequest):
 @app.post("/files/upload", response_model=UploadResponse, tags=["File Operations"])
 async def upload_file(
     file: UploadFile = FastAPIFile(...),
-    path: Optional[str] = None
+    path: Optional[str] = Form(None)
 ):
     """
     Upload a file to the specified path
@@ -221,19 +221,22 @@ async def upload_file(
         Upload confirmation with file details
     """
     try:
+        print(f"DEBUG: Upload file - path parameter: '{path}'")  # Debug logging
         file_info = await file_manager.upload_file(file, path)
+        print(f"DEBUG: File uploaded to: '{file_info.path}'")  # Debug logging
         return UploadResponse(
             message="File uploaded successfully",
             file_info=file_info
         )
     except Exception as e:
+        print(f"DEBUG: Upload error: {str(e)}")  # Debug logging
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/files/upload-multiple", response_model=List[UploadResponse], tags=["File Operations"])
 async def upload_multiple_files(
     files: List[UploadFile] = FastAPIFile(...),
-    path: Optional[str] = None
+    path: Optional[str] = Form(None)
 ):
     """
     Upload multiple files to the specified path
