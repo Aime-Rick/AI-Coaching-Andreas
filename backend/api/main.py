@@ -10,6 +10,7 @@ import os
 import tempfile
 import zipfile
 import io
+import urllib.parse
 from pathlib import Path
 import mimetypes
 from pydantic import BaseModel, Field
@@ -373,10 +374,15 @@ async def download_file(file_path: str):
     try:
         file_content, content_type, filename = file_manager.download_file(file_path)
         
+        # Properly encode filename for Content-Disposition header
+        encoded_filename = urllib.parse.quote(filename, safe='')
+        
         return StreamingResponse(
             io.BytesIO(file_content),
             media_type=content_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
         )
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -396,10 +402,15 @@ async def download_folder(folder_path: str):
     try:
         zip_content, folder_name = file_manager.download_folder(folder_path)
         
+        # Properly encode filename for Content-Disposition header
+        encoded_filename = urllib.parse.quote(f"{folder_name}.zip", safe='')
+        
         return StreamingResponse(
             io.BytesIO(zip_content),
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={folder_name}.zip"}
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
         )
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
