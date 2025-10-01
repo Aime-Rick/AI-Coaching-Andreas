@@ -748,43 +748,93 @@ class FileManager:
     
     def get_file_info(self, file_path: str) -> Dict[str, Any]:
         """
-        Get detailed information about a file in S3
+        Get detailed information about a file or folder in S3
         
         Args:
-            file_path: Path to the file
+            file_path: Path to the file or folder
             
         Returns:
-            File information
+            File or folder information
         """
         file_path = self._normalize_path(file_path)
         
         try:
-            # Check if file exists and get metadata
+            # First try to check if it's a file
             try:
                 response = self.s3_client.head_object(
                     Bucket=self.bucket_name,
                     Key=file_path
                 )
+                # It's a file - return file information
+                filename = self._get_filename(file_path)
+                
+                return {
+                    "name": filename,
+                    "path": file_path,
+                    "size": response.get('ContentLength', 0),
+                    "extension": self._get_file_extension(filename),
+                    "content_type": response.get('ContentType', self._get_content_type(filename)),
+                    "is_text": self._is_text_file(filename),
+                    "is_folder": False,
+                    "parent_path": self._get_parent_path(file_path),
+                    "last_modified": response.get('LastModified'),
+                    "etag": response.get('ETag', '').strip('"')
+                }
             except ClientError as e:
-                if e.response['Error']['Code'] == '404':
-                    raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-                raise
-            
-            # Get file info from S3 response
-            filename = self._get_filename(file_path)
-            
-            return {
-                "name": filename,
-                "path": file_path,
-                "size": response.get('ContentLength', 0),
-                "extension": self._get_file_extension(filename),
-                "content_type": response.get('ContentType', self._get_content_type(filename)),
-                "is_text": self._is_text_file(filename),
-                "parent_path": self._get_parent_path(file_path),
-                "last_modified": response.get('LastModified'),
-                "etag": response.get('ETag', '').strip('"')
+                if e.response['Error']['Code'] != '404':
+                    raise
+                # File not found, check if it's a folder
+                
+            # Check if it's a folder by looking for objects with this prefix
+            list_params = {
+                'Bucket': self.bucket_name,
+                'Prefix': f"{file_path}/",
+                'MaxKeys': 1
             }
             
+            response = self.s3_client.list_objects_v2(**list_params)
+            has_contents = 'Contents' in response
+            has_placeholder = self._object_exists(f"{file_path}/.folder_placeholder")
+            
+            if has_contents or has_placeholder:
+                # It's a folder - count files and get folder info
+                folder_name = self._get_filename(file_path) if file_path else "root"
+                
+                # Count total files and calculate total size
+                file_count = 0
+                total_size = 0
+                last_modified = None
+                
+                paginator = self.s3_client.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=self.bucket_name, Prefix=f"{file_path}/"):
+                    if 'Contents' in page:
+                        for obj in page['Contents']:
+                            # Skip placeholder files
+                            if obj['Key'].endswith('.folder_placeholder'):
+                                continue
+                            
+                            file_count += 1
+                            total_size += obj.get('Size', 0)
+                            
+                            # Track the most recent modification time
+                            obj_modified = obj.get('LastModified')
+                            if obj_modified and (not last_modified or obj_modified > last_modified):
+                                last_modified = obj_modified
+                
+                return {
+                    "name": folder_name,
+                    "path": file_path,
+                    "size": total_size,
+                    "file_count": file_count,
+                    "is_folder": True,
+                    "parent_path": self._get_parent_path(file_path),
+                    "last_modified": last_modified or datetime.now(),
+                    "content_type": "application/x-directory"
+                }
+            else:
+                # Neither file nor folder found
+                raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+                
         except HTTPException:
             raise
         except Exception as e:
