@@ -5,6 +5,7 @@ Provides comprehensive file and folder management capabilities.
 from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from typing import List, Optional, Dict, Any
 import os
 import tempfile
@@ -13,6 +14,9 @@ import io
 import urllib.parse
 from pathlib import Path
 import mimetypes
+import asyncio
+import time
+import logging
 from pydantic import BaseModel, Field
 
 from backend.files.utils import FileManager
@@ -39,8 +43,17 @@ try:
         remove_vector_store,
         start_chat_session,
         end_chat_session,
-        get_session_vector_store
+        get_session_vector_store,
+        cleanup_orphaned_resources,
+        force_cleanup_session
     )
+    from backend.assistant.cleanup_scheduler import (
+        start_cleanup_scheduler,
+        stop_cleanup_scheduler,
+        manual_cleanup,
+        cleanup_scheduler
+    )
+    cleanup_available = True
 except ImportError:
     # Handle case where assistant module is not available
     generate_chat_response = None
@@ -55,6 +68,13 @@ except ImportError:
     start_chat_session = None
     end_chat_session = None
     get_session_vector_store = None
+    cleanup_orphaned_resources = None
+    force_cleanup_session = None
+    start_cleanup_scheduler = None
+    stop_cleanup_scheduler = None
+    manual_cleanup = None
+    cleanup_scheduler = None
+    cleanup_available = False
 
 app = FastAPI(
     title="AI Coaching File Management API", 
@@ -90,11 +110,32 @@ app = FastAPI(
             "description": "Chat session lifecycle and history management"
         },
         {
+            "name": "System Maintenance",
+            "description": "Automatic cleanup, scheduled tasks, and system maintenance operations"
+        },
+        {
             "name": "Storage",
             "description": "Storage statistics and disk usage information"
         }
     ]
 )
+
+# Performance optimization middleware
+@app.middleware("http")
+async def add_performance_headers(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    
+    # Log slow requests
+    if process_time > 2.0:
+        logging.warning(f"Slow request: {request.method} {request.url} took {process_time:.2f}s")
+    
+    return response
+
+# Add performance middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Add CORS middleware
 app.add_middleware(
@@ -107,6 +148,50 @@ app.add_middleware(
 
 # Initialize file manager
 file_manager = FileManager(skip_validation=True)  # Skip S3 validation for development
+
+# Application lifecycle events (using older event handlers for compatibility)
+@app.on_event("startup")
+async def startup_event():
+    """Application startup tasks"""
+    if cleanup_available and start_cleanup_scheduler:
+        try:
+            start_cleanup_scheduler()
+            print("✅ Cleanup scheduler started automatically on application startup")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not start cleanup scheduler on startup: {str(e)}")
+
+@app.on_event("shutdown")  
+async def shutdown_event():
+    """Application shutdown tasks"""
+    if cleanup_available and stop_cleanup_scheduler:
+        try:
+            stop_cleanup_scheduler()
+            print("✅ Cleanup scheduler stopped on application shutdown")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not stop cleanup scheduler on shutdown: {str(e)}")
+
+# Alternative lifespan approach for newer FastAPI versions (commented out for compatibility)
+# from contextlib import asynccontextmanager
+# 
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     # Startup
+#     if cleanup_available and start_cleanup_scheduler:
+#         try:
+#             start_cleanup_scheduler()
+#             print("✅ Cleanup scheduler started automatically on application startup")
+#         except Exception as e:
+#             print(f"⚠️ Warning: Could not start cleanup scheduler on startup: {str(e)}")
+#     
+#     yield
+#     
+#     # Shutdown
+#     if cleanup_available and stop_cleanup_scheduler:
+#         try:
+#             stop_cleanup_scheduler()
+#             print("✅ Cleanup scheduler stopped on application shutdown")
+#         except Exception as e:
+#             print(f"⚠️ Warning: Could not stop cleanup scheduler on shutdown: {str(e)}")
 
 # Pydantic models for chat and report endpoints
 class ChatRequest(BaseModel):
@@ -168,7 +253,10 @@ class EndChatSessionRequest(BaseModel):
 
 class EndChatSessionResponse(BaseModel):
     message: str = Field(..., description="Success message")
-    vector_store_deleted: bool = Field(..., description="Whether vector store was deleted")
+    cleanup_status: Dict[str, Any] = Field(..., description="Detailed cleanup status")
+    session_id: str = Field(..., description="Session identifier that was cleaned up")
+    vector_store_id: Optional[str] = Field(None, description="Vector store ID that was cleaned up")
+    messages_deleted: int = Field(0, description="Number of messages that were deleted")
 
 
 @app.get("/", response_model=Dict[str, str], tags=["System"])
@@ -281,12 +369,19 @@ async def get_files(
         List of files and folders with metadata
     """
     try:
+        # Add performance optimization for file listing
+        start_time = time.time()
         file_list = file_manager.get_files(
             path=path,
             include_hidden=include_hidden,
             sort_by=sort_by,
             sort_order=sort_order
         )
+        
+        process_time = time.time() - start_time
+        if process_time > 1.0:
+            logging.warning(f"Slow file listing: {path} took {process_time:.2f}s")
+            
         return file_list
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -785,6 +880,134 @@ async def end_chat_session_endpoint(request: EndChatSessionRequest):
     try:
         result = end_chat_session(request.session_id)
         return EndChatSessionResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/sessions/cleanup-orphaned", tags=["Session Management"])
+async def cleanup_orphaned_resources_endpoint():
+    """
+    Clean up orphaned resources (sessions without vector stores, vector stores without sessions)
+    
+    Returns:
+        Cleanup statistics and results
+    """
+    if cleanup_orphaned_resources is None:
+        raise HTTPException(status_code=500, detail="Cleanup functionality not available")
+    
+    try:
+        result = cleanup_orphaned_resources()
+        return {
+            "message": "Orphaned resources cleanup completed",
+            "cleanup_stats": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/sessions/{session_id}/force-cleanup", tags=["Session Management"])
+async def force_cleanup_session_endpoint(session_id: str):
+    """
+    Force cleanup of a session even if partially deleted or corrupted
+    
+    Args:
+        session_id: Session identifier to force cleanup
+        
+    Returns:
+        Force cleanup results
+    """
+    if force_cleanup_session is None:
+        raise HTTPException(status_code=500, detail="Cleanup functionality not available")
+    
+    try:
+        result = force_cleanup_session(session_id)
+        return {
+            "message": f"Force cleanup completed for session {session_id}",
+            "cleanup_results": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/system/cleanup/start-scheduler", tags=["System Maintenance"])
+async def start_cleanup_scheduler_endpoint():
+    """
+    Start the automatic cleanup scheduler for background maintenance
+    
+    Returns:
+        Scheduler start confirmation
+    """
+    if not cleanup_available or start_cleanup_scheduler is None:
+        raise HTTPException(status_code=500, detail="Cleanup scheduler not available")
+    
+    try:
+        start_cleanup_scheduler()
+        return {
+            "message": "Cleanup scheduler started successfully",
+            "status": "running"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/system/cleanup/stop-scheduler", tags=["System Maintenance"])
+async def stop_cleanup_scheduler_endpoint():
+    """
+    Stop the automatic cleanup scheduler
+    
+    Returns:
+        Scheduler stop confirmation
+    """
+    if not cleanup_available or stop_cleanup_scheduler is None:
+        raise HTTPException(status_code=500, detail="Cleanup scheduler not available")
+    
+    try:
+        stop_cleanup_scheduler()
+        return {
+            "message": "Cleanup scheduler stopped successfully",
+            "status": "stopped"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/system/cleanup/manual", tags=["System Maintenance"])
+async def manual_cleanup_endpoint():
+    """
+    Manually trigger a comprehensive system cleanup
+    
+    Returns:
+        Cleanup results and statistics
+    """
+    if not cleanup_available or manual_cleanup is None:
+        raise HTTPException(status_code=500, detail="Manual cleanup not available")
+    
+    try:
+        result = manual_cleanup()
+        return {
+            "message": "Manual cleanup completed",
+            "cleanup_results": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/system/cleanup/status", tags=["System Maintenance"])
+async def cleanup_scheduler_status():
+    """
+    Get the current status of the cleanup scheduler
+    
+    Returns:
+        Current scheduler status and statistics
+    """
+    if not cleanup_available or cleanup_scheduler is None:
+        raise HTTPException(status_code=500, detail="Cleanup scheduler not available")
+    
+    try:
+        return {
+            "scheduler_running": cleanup_scheduler.running,
+            "message": "Cleanup scheduler is running" if cleanup_scheduler.running else "Cleanup scheduler is stopped"
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

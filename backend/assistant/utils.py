@@ -155,8 +155,51 @@ def create_vector_store_from_files(file_paths: List[str], store_name: Optional[s
             pass
         raise
 
-def delete_vector_store(store_id: str):
-    """Deletes a vector store by its ID."""
-    client.vector_stores.delete(
-        vector_store_id=store_id
-    )
+def delete_vector_store(store_id: str) -> bool:
+    """Deletes a vector store and all its associated files.
+    
+    Args:
+        store_id: ID of the vector store to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        print(f"Starting cleanup of vector store: {store_id}")
+        
+        # First, list all files in the vector store
+        try:
+            vector_store_files = client.vector_stores.files.list(vector_store_id=store_id)
+            file_ids = [file.id for file in vector_store_files.data]
+            
+            print(f"Found {len(file_ids)} files in vector store {store_id}")
+            
+            # Delete each file from the vector store
+            for file_id in file_ids:
+                try:
+                    client.vector_stores.files.delete(
+                        vector_store_id=store_id,
+                        file_id=file_id
+                    )
+                    print(f"✅ Removed file {file_id} from vector store")
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not remove file {file_id} from vector store: {str(e)}")
+                    
+                # Also delete the file from OpenAI storage entirely
+                try:
+                    client.files.delete(file_id)
+                    print(f"✅ Deleted file {file_id} from OpenAI storage")
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not delete file {file_id} from OpenAI storage: {str(e)}")
+                    
+        except Exception as e:
+            print(f"⚠️ Warning: Could not list files in vector store {store_id}: {str(e)}")
+        
+        # Finally, delete the vector store itself
+        client.vector_stores.delete(vector_store_id=store_id)
+        print(f"✅ Successfully deleted vector store {store_id}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error deleting vector store {store_id}: {str(e)}")
+        return False

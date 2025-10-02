@@ -36,6 +36,12 @@ class ChatMemoryService:
             ChatSession.is_active == True
         ).order_by(ChatSession.updated_at.desc()).limit(limit).all()
     
+    def get_all_sessions(self, limit: int = 1000) -> List[ChatSession]:
+        """Get all active sessions in the database"""
+        return self.db.query(ChatSession).filter(
+            ChatSession.is_active == True
+        ).order_by(ChatSession.updated_at.desc()).limit(limit).all()
+    
     def add_message(self, session_id: str, role: str, content: str, message_type: str = "chat", tokens_used: Optional[int] = None) -> ChatMessage:
         """Add a message to a chat session"""
         message = ChatMessage(

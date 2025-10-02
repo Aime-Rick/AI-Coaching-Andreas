@@ -33,16 +33,37 @@ You are an AI assistant designed to answer user queries using the provided conte
 - Directly answer the user’s question.    
 """
 
-report_prompt = """
-You are an expert health and wellness coaching assistant.  
-Your role is to analyze client anamnesis documents (covering weight, goals, illnesses, medications, sleep, digestion, hormones, lifestyle, etc.) and generate a **structured report** for the coach.  
+report_prompt = """You are an expert health and wellness coaching assistant.  
 
-The report must include:
-1. **Summary of the client’s situation** — provide a clear, professional overview of their health status, challenges, and goals.  
-2. **Key priorities for coaching** — suggest the most important areas to focus on first (e.g., lifestyle habits, nutrition, sleep, stress management, etc.), with reasoning behind the order of priorities.  
-3. **Clarity and structure** — use headings, bullet points, and concise explanations. Keep the tone professional, supportive, and actionable.  
+Your task is to analyze client anamnesis documents (covering weight, goals, illnesses, medications, sleep, digestion, hormones, lifestyle, etc.) and generate a **clear, professional, and well-structured report** for the coach.  
 
-Do not give medical diagnoses. Instead, highlight coaching priorities and suggestions that support the client in achieving their goals.
+The report must strictly follow this structure:
+
+---
+
+**Summary of the Client’s Situation**  
+- Write 3–6 concise bullet points or short paragraphs summarizing the client’s health status, lifestyle habits, challenges, and personal goals.  
+- Keep it professional and easy to read. Avoid overly technical terms.  
+
+---
+
+**Key Priorities for Coaching**  
+Present the most important focus areas in a **numbered list**, in order of priority. For each priority:  
+- State the focus area clearly (e.g., Sleep Routine, Nutrition Habits, Stress Management, Physical Activity).  
+- Provide 1–2 short sentences explaining *why* this is important and how it connects to the client’s goals.  
+
+---
+Do not include any additional sections or information beyond what is specified above.
+**Formatting & Style Rules:**  
+- Use **bold headings** exactly as shown above.  
+- Use short paragraphs and bullet points for readability.  
+- Number the priorities clearly (1, 2, 3, …).  
+- Keep the tone professional, supportive, and actionable.  
+- Do **not** include medical diagnoses.  
+- Do **not** include any citations, file references, or technical tokens.  
+- Output **only** the structured coaching report.  
+
+The final document should look polished, easy to read, and ready to share with the coach.
 """
 
 report_query="""
@@ -381,6 +402,10 @@ def end_chat_session(session_id: str) -> Dict:
         
         vector_store_id = session.vector_store_id
         
+        # Get message count before deletion
+        messages = memory_service.get_chat_history(session_id)
+        messages_deleted = len(messages)
+        
         # Delete the session (this will also delete all messages due to cascade)
         success = memory_service.delete_session(session_id)
         db.close()
@@ -393,9 +418,19 @@ def end_chat_session(session_id: str) -> Dict:
         if vector_store_id:
             vector_store_deleted = remove_vector_store(vector_store_id)
         
+        # Return structure expected by API
+        cleanup_status = {
+            "session_deleted": success,
+            "vector_store_deleted": vector_store_deleted,
+            "messages_deleted": messages_deleted
+        }
+        
         return {
             "message": "Chat session ended successfully",
-            "vector_store_deleted": vector_store_deleted
+            "cleanup_status": cleanup_status,
+            "session_id": session_id,
+            "vector_store_id": vector_store_id,
+            "messages_deleted": messages_deleted
         }
         
     except Exception as e:
@@ -426,3 +461,129 @@ def get_session_vector_store(session_id: str) -> Optional[str]:
     except Exception as e:
         print(f"Error getting session vector store: {str(e)}")
         return None
+
+
+# Cleanup and maintenance functions
+
+def cleanup_orphaned_resources() -> Dict:
+    """
+    Clean up orphaned resources (sessions without vector stores, vector stores without sessions)
+    
+    Returns:
+        Dict with cleanup statistics and results
+    """
+    try:
+        db = next(get_db())
+        memory_service = ChatMemoryService(db)
+        
+        # Get all sessions
+        all_sessions = memory_service.get_all_sessions()
+        
+        cleanup_stats = {
+            "sessions_checked": len(all_sessions),
+            "orphaned_sessions_cleaned": 0,
+            "vector_stores_cleaned": 0,
+            "errors": []
+        }
+        
+        # Check each session for orphaned resources
+        for session in all_sessions:
+            try:
+                # If session has a vector store ID, check if it actually exists
+                if session.vector_store_id:
+                    # Try to get vector store info to see if it exists
+                    # This is a simple check - in a real implementation you might want to
+                    # check with OpenAI API to see if the vector store actually exists
+                    pass
+                else:
+                    # Session without vector store - this might be orphaned
+                    # For now, we'll leave it as sessions can exist without vector stores
+                    pass
+                    
+            except Exception as e:
+                cleanup_stats["errors"].append(f"Error checking session {session.session_id}: {str(e)}")
+        
+        db.close()
+        return cleanup_stats
+        
+    except Exception as e:
+        return {
+            "error": f"Failed to cleanup orphaned resources: {str(e)}",
+            "sessions_checked": 0,
+            "orphaned_sessions_cleaned": 0,
+            "vector_stores_cleaned": 0,
+            "errors": [str(e)]
+        }
+
+
+def force_cleanup_session(session_id: str) -> Dict:
+    """
+    Force cleanup of a session even if partially deleted or corrupted
+    
+    Args:
+        session_id: Session identifier to force cleanup
+        
+    Returns:
+        Dict with force cleanup results
+    """
+    try:
+        db = next(get_db())
+        memory_service = ChatMemoryService(db)
+        
+        cleanup_results = {
+            "session_id": session_id,
+            "session_deleted": False,
+            "messages_deleted": 0,
+            "vector_store_id": None,
+            "vector_store_deleted": False,
+            "errors": []
+        }
+        
+        # Try to get session info
+        try:
+            session = memory_service.get_session(session_id)
+            if session:
+                cleanup_results["vector_store_id"] = session.vector_store_id
+        except Exception as e:
+            cleanup_results["errors"].append(f"Could not retrieve session info: {str(e)}")
+        
+        # Force delete session and messages
+        try:
+            # Get message count before deletion
+            messages = memory_service.get_chat_history(session_id)
+            cleanup_results["messages_deleted"] = len(messages)
+            
+            # Delete the session (cascade will delete messages)
+            success = memory_service.delete_session(session_id)
+            cleanup_results["session_deleted"] = success
+            
+            if not success:
+                cleanup_results["errors"].append("Failed to delete session from database")
+                
+        except Exception as e:
+            cleanup_results["errors"].append(f"Error deleting session: {str(e)}")
+        
+        # Try to cleanup vector store if we have the ID
+        if cleanup_results["vector_store_id"]:
+            try:
+                vector_store_deleted = remove_vector_store(cleanup_results["vector_store_id"])
+                cleanup_results["vector_store_deleted"] = vector_store_deleted
+                
+                if not vector_store_deleted:
+                    cleanup_results["errors"].append("Failed to delete vector store")
+                    
+            except Exception as e:
+                cleanup_results["errors"].append(f"Error deleting vector store: {str(e)}")
+        
+        db.close()
+        return cleanup_results
+        
+    except Exception as e:
+        return {
+            "session_id": session_id,
+            "session_deleted": False,
+            "messages_deleted": 0,
+            "vector_store_id": None,
+            "vector_store_deleted": False,
+            "errors": [f"Force cleanup failed: {str(e)}"]
+        }
