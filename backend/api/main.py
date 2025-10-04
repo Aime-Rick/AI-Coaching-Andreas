@@ -239,6 +239,7 @@ class StartChatSessionRequest(BaseModel):
     folder_path: Optional[str] = Field(None, description="Path to folder for vector store")
     file_paths: Optional[List[str]] = Field(None, description="List of file paths for vector store")
     session_title: Optional[str] = Field(None, description="Optional title for the session")
+    current_session_id: Optional[str] = Field(None, description="Current session ID to clean up before starting new session")
 
 
 class StartChatSessionResponse(BaseModel):
@@ -846,6 +847,15 @@ async def start_chat_session_endpoint(request: StartChatSessionRequest):
         raise HTTPException(status_code=500, detail="Session functionality not available")
     
     try:
+        # Clean up current session if provided (for folder switching)
+        if request.current_session_id and end_chat_session is not None:
+            try:
+                cleanup_result = end_chat_session(request.current_session_id)
+                print(f"✅ Cleaned up previous session: {request.current_session_id}")
+            except Exception as cleanup_error:
+                print(f"⚠️ Warning: Could not fully clean up previous session {request.current_session_id}: {cleanup_error}")
+                # Continue with new session creation even if cleanup fails
+        
         if request.folder_path and request.file_paths:
             raise HTTPException(status_code=400, detail="Provide either folder_path or file_paths, not both")
         
@@ -882,6 +892,58 @@ async def end_chat_session_endpoint(request: EndChatSessionRequest):
         return EndChatSessionResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/sessions/switch-folder", response_model=StartChatSessionResponse, tags=["Session Management"])
+async def switch_folder_session(request: StartChatSessionRequest):
+    """
+    Switch to a new folder by ending current session and starting new one
+    
+    This endpoint properly cleans up the current session (including vector store and OpenAI files)
+    before starting a new session with the selected folder.
+    
+    Args:
+        request: Session switch request with new folder and current session info
+        
+    Returns:
+        New session and vector store details
+    """
+    if start_chat_session is None or end_chat_session is None:
+        raise HTTPException(status_code=500, detail="Session functionality not available")
+    
+    try:
+        # Clean up current session if provided
+        if request.current_session_id:
+            try:
+                cleanup_result = end_chat_session(request.current_session_id)
+                print(f"✅ Cleaned up previous session: {request.current_session_id}")
+                print(f"Cleanup details: {cleanup_result}")
+            except Exception as cleanup_error:
+                print(f"⚠️ Warning: Could not fully clean up previous session {request.current_session_id}: {cleanup_error}")
+                # Continue with new session creation even if cleanup fails
+        
+        # Validate folder/file requirements
+        if request.folder_path and request.file_paths:
+            raise HTTPException(status_code=400, detail="Provide either folder_path or file_paths, not both")
+        
+        if not request.folder_path and not request.file_paths:
+            raise HTTPException(status_code=400, detail="Either folder_path or file_paths must be provided")
+        
+        # Start new session
+        result = start_chat_session(
+            user_id=request.user_id,
+            folder_path=request.folder_path,
+            file_paths=request.file_paths,
+            session_title=request.session_title
+        )
+        
+        print(f"✅ Started new session: {result['session_id']} for folder: {request.folder_path}")
+        return StartChatSessionResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to switch folder session: {str(e)}")
 
 
 @app.post("/sessions/cleanup-orphaned", tags=["Session Management"])
