@@ -222,6 +222,7 @@ class BatchOperationResponse(BaseModel):
 class StorageStats(BaseModel):
     """Storage usage statistics"""
     total_files: int = Field(..., description="Total number of files")
+    total_folders: int = Field(..., description="Total number of folders")
     total_size: int = Field(..., description="Total size in bytes")
     total_size_mb: float = Field(..., description="Total size in megabytes")
     file_types: Dict[str, int] = Field(..., description="Count of files by type")
@@ -231,6 +232,7 @@ class StorageStats(BaseModel):
         json_schema_extra = {
             "example": {
                 "total_files": 150,
+                "total_folders": 10,
                 "total_size": 104857600,
                 "total_size_mb": 100.0,
                 "file_types": {

@@ -11,3 +11,5 @@ uvicorn[standard]
 python-multipart
 boto3
 botocore
+schedule
+requests
