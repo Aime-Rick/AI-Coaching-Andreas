@@ -211,6 +211,7 @@ class ReportRequest(BaseModel):
     session_id: str = Field(..., description="Session ID for the report")
     vector_store_id: Optional[str] = Field(None, description="Optional vector store ID (if not using session-managed store)")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
+    language: Optional[str] = Field(None, description="Optional language code for the generated report")
 
 class ReportResponse(BaseModel):
     report: str = Field(..., description="Generated coaching report")
@@ -667,7 +668,8 @@ async def generate_coaching_report(request: ReportRequest):
         result = generate_report(
             vector_store_id=vector_store_id,
             session_id=request.session_id,
-            user_id=request.user_id
+            user_id=request.user_id,
+            language=request.language
         )
         return ReportResponse(**result)
     except Exception as e:

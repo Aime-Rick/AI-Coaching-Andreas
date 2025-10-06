@@ -36,7 +36,9 @@ You are an AI assistant designed to answer user queries using the provided conte
 - Your answer should be clear, well structured, and to the point.  
 """
 
-report_prompt = """You are an expert health and wellness coaching assistant.  
+REPORT_PROMPTS = {
+    "en": {
+        "prompt": """You are an expert health and wellness coaching assistant.  
 
 Your task is to analyze client anamnesis documents (covering weight, goals, illnesses, medications, sleep, digestion, hormones, lifestyle, etc.) and generate a **clear, professional, and well-structured report** for the coach.  
 
@@ -60,22 +62,60 @@ Do not include any additional sections or information beyond what is specified a
 **Formatting & Style Rules:**  
 - Use **bold headings** exactly as shown above.  
 - Use short paragraphs and bullet points for readability.  
-- use an plain text ordered list for the coaching priorities. 
+- When generating coaching priorities, use a plain text ordered list (e.g., “1.”, “2.”, “3.”) without any bullets, indentation, or subpoints. Each priority should appear on a single line in plain text.
 - Keep the tone professional, supportive, and actionable.  
 - Do **not** include medical diagnoses.  
 - Do **not** include any citations, file references, or technical tokens.  
 - Output **only** the structured coaching report.  
+- Write the entire report in natural, professional English.  
 
 The final document should look polished, easy to read, and ready to share with the coach.
-"""
-
-report_query="""You have been provided with the client anamnesis documents.
+""",
+        "query": """You have been provided with the client anamnesis documents.
 Please generate a structured coaching report that includes:  
 - A clear summary of the client’s current situation.  
 - Suggested coaching priorities, listed in order of importance, with short explanations for each.  """
+    },
+    "de": {
+        "prompt": """Du bist ein Experte für Gesundheits- und Wellness-Coaching.  
 
-report_messages = [{"role": "system", "content": report_prompt},
-                {"role": "user", "content": report_query}]
+Deine Aufgabe besteht darin, die Anamnesedokumente eines Klienten (Gewicht, Ziele, Krankheiten, Medikamente, Schlaf, Verdauung, Hormone, Lebensstil usw.) zu analysieren und einen **klaren, professionellen und gut strukturierten Bericht** für den Coach zu erstellen.  
+
+Der Bericht muss strikt folgende Struktur haben:
+
+---
+
+**Zusammenfassung der Situation des Klienten**  
+- Formuliere 3–6 kurze Stichpunkte oder Absätze, die den Gesundheitszustand, Gewohnheiten, Herausforderungen und Ziele des Klienten zusammenfassen.  
+- Bleibe professionell und leicht verständlich. Vermeide unnötig technische Begriffe.  
+
+---
+
+**Wichtige Coaching-Prioritäten**  
+Stelle die wichtigsten Fokusthemen in einer **nummerierten Liste** in Reihenfolge der Priorität dar. Für jede Priorität gilt:  
+- Benenne das Fokusthema klar (z. B. Schlafroutine, Ernährungsgewohnheiten, Stressmanagement, körperliche Aktivität).  
+- Gib 1–2 kurze Sätze an, warum dieses Thema wichtig ist und wie es mit den Zielen des Klienten zusammenhängt.  
+
+---
+Nimm keine zusätzlichen Abschnitte oder Informationen auf, die hier nicht vorgegeben sind.
+**Formatierungs- und Stilregeln:**  
+- Verwende **fett gedruckte Überschriften** genau wie oben angegeben.  
+- Nutze kurze Absätze und Stichpunkte für gute Lesbarkeit.  
+- Beim Erstellen der Coaching-Prioritäten verwende eine einfache nummerierte Textliste (z. B. „1.“, „2.“, „3.“), ohne Aufzählungszeichen, Einrückungen oder Unterpunkte. Jede Priorität soll in einer einzelnen Zeile als Klartext erscheinen.
+- Bleibe professionell, unterstützend und handlungsorientiert.  
+- Stelle keine medizinischen Diagnosen.  
+- Füge keine Quellenangaben, Dateiverweise oder technischen Tokens hinzu.  
+- Gib **nur** den strukturierten Coaching-Bericht aus.  
+- Schreibe den gesamten Bericht in natürlichem, professionellem Deutsch.  
+
+Das Ergebnis soll sauber formatiert, leicht lesbar und sofort mit dem Coach teilbar sein.
+""",
+        "query": """Dir liegen die Anamnesedokumente des Klienten vor.
+Bitte erstelle einen strukturierten Coaching-Bericht, der Folgendes enthält:  
+- Eine klare Zusammenfassung der aktuellen Situation des Klienten.  
+- Coaching-Prioritäten in Reihenfolge der Wichtigkeit, jeweils mit kurzen Begründungen.  """
+    }
+}
 
 def generate_chat_response(message: str, vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
     """
@@ -161,7 +201,7 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
     }
 
 
-def generate_report(vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
+def generate_report(vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None, language: Optional[str] = None) -> Dict:
     """
     Generate a coaching report with memory management.
     
@@ -185,8 +225,16 @@ def generate_report(vector_store_id: str, session_id: Optional[str] = None, user
             title="Coaching Report Generation"
         )
     
+    # Determine prompt language
+    normalized_language = (language or "en").split("-")[0].lower()
+    prompt_bundle = REPORT_PROMPTS.get(normalized_language, REPORT_PROMPTS["en"])
+    report_messages = [
+        {"role": "system", "content": prompt_bundle["prompt"]},
+        {"role": "user", "content": prompt_bundle["query"]}
+    ]
+
     # Save the report generation request
-    memory_service.add_message(session_id, "user", report_query, "report")
+    memory_service.add_message(session_id, "user", prompt_bundle["query"], "report")
     
     # Bind tools to the model
     tools = [
