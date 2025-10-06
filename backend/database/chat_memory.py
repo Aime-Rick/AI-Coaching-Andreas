@@ -65,16 +65,31 @@ class ChatMemoryService:
         return message
     
     def get_chat_history(self, session_id: str, limit: int = 50) -> List[ChatMessage]:
-        """Get chat history for a session, ordered by timestamp"""
+        """Get chat history for a session, ordered by timestamp, excluding report messages"""
+        return self.db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.message_type != "report"
+        ).order_by(ChatMessage.timestamp.asc()).limit(limit).all()
+    
+    def get_recent_messages(self, session_id: str, limit: int = 10) -> List[ChatMessage]:
+        """Get the most recent messages for context, excluding report messages"""
+        return self.db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.message_type != "report"
+        ).order_by(ChatMessage.timestamp.desc()).limit(limit).all()[::-1]  # Reverse to get chronological order
+    
+    def get_all_session_messages(self, session_id: str, limit: int = 50) -> List[ChatMessage]:
+        """Get all messages for a session including reports, ordered by timestamp"""
         return self.db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
         ).order_by(ChatMessage.timestamp.asc()).limit(limit).all()
     
-    def get_recent_messages(self, session_id: str, limit: int = 10) -> List[ChatMessage]:
-        """Get the most recent messages for context"""
+    def get_session_reports(self, session_id: str, limit: int = 10) -> List[ChatMessage]:
+        """Get only report messages for a session, ordered by timestamp"""
         return self.db.query(ChatMessage).filter(
-            ChatMessage.session_id == session_id
-        ).order_by(ChatMessage.timestamp.desc()).limit(limit).all()[::-1]  # Reverse to get chronological order
+            ChatMessage.session_id == session_id,
+            ChatMessage.message_type == "report"
+        ).order_by(ChatMessage.timestamp.asc()).limit(limit).all()
     
     def update_session_title(self, session_id: str, title: str) -> bool:
         """Update session title"""
@@ -111,7 +126,15 @@ class ChatMemoryService:
         if not session:
             return {}
         
-        message_count = self.db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count()
+        # Count only chat messages (exclude reports)
+        chat_message_count = self.db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.message_type != "report"
+        ).count()
+        
+        # Count total messages including reports
+        total_message_count = self.db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count()
+        
         total_tokens = self.db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id,
             ChatMessage.tokens_used.isnot(None)
@@ -124,7 +147,8 @@ class ChatMemoryService:
             "title": session.title,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
-            "message_count": message_count,
+            "message_count": chat_message_count,  # Only chat messages
+            "total_message_count": total_message_count,  # All messages including reports
             "total_tokens_used": total_tokens_used,
             "vector_store_id": session.vector_store_id
         }
