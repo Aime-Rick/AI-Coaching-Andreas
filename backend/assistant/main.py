@@ -16,7 +16,8 @@ create_tables()
 
 llm = ChatOpenAI(model="gpt-5-mini", 
                  max_completion_tokens=20000, 
-                 api_key=os.getenv("OPENAI_API_KEY"))
+                 api_key=os.getenv("OPENAI_API_KEY"),
+                 temperature=0)
 
 chat_prompt="""
 You are an AI assistant designed to answer user queries using the provided context documents.  
@@ -59,7 +60,7 @@ Do not include any additional sections or information beyond what is specified a
 **Formatting & Style Rules:**  
 - Use **bold headings** exactly as shown above.  
 - Use short paragraphs and bullet points for readability.  
-- Number the priorities clearly (1, 2, 3, …).  
+- use an plain text ordered list for the coaching priorities. 
 - Keep the tone professional, supportive, and actionable.  
 - Do **not** include medical diagnoses.  
 - Do **not** include any citations, file references, or technical tokens.  
@@ -243,7 +244,7 @@ def get_chat_sessions(user_id: str, limit: int = 50) -> List[Dict]:
     return result
 
 def get_chat_history(session_id: str) -> List[Dict]:
-    """Get full chat history for a session"""
+    """Get full chat history for a session, excluding report messages"""
     db = next(get_db())
     memory_service = ChatMemoryService(db)
     
@@ -257,6 +258,26 @@ def get_chat_history(session_id: str) -> List[Dict]:
             "message_type": msg.message_type,
             "timestamp": msg.timestamp.isoformat(),
             "tokens_used": msg.tokens_used
+        })
+    
+    db.close()
+    return result
+
+def get_session_reports(session_id: str) -> List[Dict]:
+    """Get all report messages for a session"""
+    db = next(get_db())
+    memory_service = ChatMemoryService(db)
+    
+    reports = memory_service.get_session_reports(session_id)
+    
+    result = []
+    for report in reports:
+        result.append({
+            "role": report.role,
+            "content": report.content,
+            "message_type": report.message_type,
+            "timestamp": report.timestamp.isoformat(),
+            "tokens_used": report.tokens_used
         })
     
     db.close()
@@ -403,9 +424,9 @@ def end_chat_session(session_id: str) -> Dict:
         
         vector_store_id = session.vector_store_id
         
-        # Get message count before deletion
-        messages = memory_service.get_chat_history(session_id)
-        messages_deleted = len(messages)
+        # Get message count before deletion (only count chat messages, not reports)
+        chat_messages = memory_service.get_chat_history(session_id)
+        messages_deleted = len(chat_messages)
         
         # Delete the session (this will also delete all messages due to cascade)
         success = memory_service.delete_session(session_id)
@@ -550,9 +571,9 @@ def force_cleanup_session(session_id: str) -> Dict:
         
         # Force delete session and messages
         try:
-            # Get message count before deletion
-            messages = memory_service.get_chat_history(session_id)
-            cleanup_results["messages_deleted"] = len(messages)
+            # Get message count before deletion (only count chat messages, not reports)
+            chat_messages = memory_service.get_chat_history(session_id)
+            cleanup_results["messages_deleted"] = len(chat_messages)
             
             # Delete the session (cascade will delete messages)
             success = memory_service.delete_session(session_id)

@@ -36,6 +36,7 @@ try:
         generate_report,
         get_chat_sessions,
         get_chat_history,
+        get_session_reports,
         delete_chat_session,
         update_session_title,
         create_vector_store_from_folder,
@@ -60,6 +61,7 @@ except ImportError:
     generate_report = None
     get_chat_sessions = None
     get_chat_history = None
+    get_session_reports = None
     delete_chat_session = None
     update_session_title = None
     create_vector_store_from_folder = None
@@ -765,13 +767,13 @@ async def get_user_sessions(user_id: str, limit: int = 50):
 @app.get("/sessions/{session_id}/history", response_model=SessionHistoryResponse, tags=["Session Management"])
 async def get_session_history(session_id: str):
     """
-    Get full chat history for a session
+    Get chat history for a session (excluding report messages)
     
     Args:
         session_id: Session identifier
         
     Returns:
-        Complete chat history for the session
+        Chat history for the session (reports excluded)
     """
     if get_chat_history is None:
         raise HTTPException(status_code=500, detail="Session functionality not available")
@@ -779,6 +781,27 @@ async def get_session_history(session_id: str):
     try:
         history = get_chat_history(session_id)
         return SessionHistoryResponse(history=history)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/reports", response_model=SessionHistoryResponse, tags=["Session Management"])
+async def get_session_reports_endpoint(session_id: str):
+    """
+    Get all report messages for a session
+    
+    Args:
+        session_id: Session identifier
+        
+    Returns:
+        All report messages for the session
+    """
+    if get_session_reports is None:
+        raise HTTPException(status_code=500, detail="Session functionality not available")
+    
+    try:
+        reports = get_session_reports(session_id)
+        return SessionHistoryResponse(history=reports)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
