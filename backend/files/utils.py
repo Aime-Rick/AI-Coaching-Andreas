@@ -2,8 +2,10 @@
 Utility functions for file management with AWS S3
 """
 
+import asyncio
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
+from boto3.s3.transfer import TransferConfig
 from fastapi import UploadFile, HTTPException
 from typing import List, Optional, Dict, Any, Tuple
 import os
@@ -41,6 +43,16 @@ class FileManager:
             endpoint_url: Optional S3 endpoint URL for S3-compatible services
             skip_validation: Skip bucket validation (useful for development)
         """
+        # Optimize transfer configuration for better performance
+        self.single_upload_limit = 100 * 1024 * 1024  # Reduce to 100 MB
+        self.transfer_config = TransferConfig(
+            multipart_threshold=self.single_upload_limit,
+            multipart_chunksize=16 * 1024 * 1024,  # Reduce chunk size to 16 MB
+            max_concurrency=5,  # Reduce concurrency to avoid timeouts
+            use_threads=True,
+            max_bandwidth=50 * 1024 * 1024  # Limit bandwidth to 50 MB/s
+        )
+
         try:
             # Get credentials from environment if not provided
             self.aws_access_key_id = aws_access_key_id or os.getenv('AWS_ACCESS_KEY_ID')
@@ -63,6 +75,17 @@ class FileManager:
                 else:
                     raise ValueError("S3 bucket name must be provided via constructor or S3_BUCKET_NAME environment variable")
             
+            # Add retry configuration for better error handling
+            import botocore.config
+            self.config = botocore.config.Config(
+                region_name=self.aws_region,
+                retries={
+                    'max_attempts': 3,
+                    'mode': 'adaptive'
+                },
+                max_pool_connections=10
+            )
+            
             # Initialize S3 client
             session = boto3.Session(
                 aws_access_key_id=self.aws_access_key_id,
@@ -71,7 +94,7 @@ class FileManager:
             )
             
             # Create S3 client with optional endpoint URL for S3-compatible services
-            client_config = {}
+            client_config = {'config': self.config}
             if self.endpoint_url and self.endpoint_url.strip():
                 client_config['endpoint_url'] = self.endpoint_url.strip()
             
@@ -169,7 +192,7 @@ class FileManager:
     
     def _get_content_type(self, filename: str) -> str:
         """
-        Determine content type from filename
+        Get content type based on file extension with enhanced support
         
         Args:
             filename: Name of the file
@@ -177,8 +200,33 @@ class FileManager:
         Returns:
             MIME content type
         """
-        content_type, _ = mimetypes.guess_type(filename)
-        return content_type or "application/octet-stream"
+        extension = self._get_file_extension(filename).lower()
+        
+        content_types = {
+            '.txt': 'text/plain',
+            '.md': 'text/markdown',
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.pdf': 'application/pdf',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.csv': 'text/csv',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.tiff': 'image/tiff',
+            '.svg': 'image/svg+xml',
+            '.webp': 'image/webp',
+            '.zip': 'application/zip',
+            '.tar': 'application/x-tar',
+            '.gz': 'application/gzip'
+        }
+        
+        return content_types.get(extension, 'application/octet-stream')
     
     def _is_text_file(self, filename: str) -> bool:
         """
@@ -195,6 +243,32 @@ class FileManager:
             '.yml', '.yaml', '.csv', '.sql', '.log', '.ini', '.cfg', '.conf'
         }
         return self._get_file_extension(filename) in text_extensions
+    
+    def _is_excel_file(self, filename: str) -> bool:
+        """
+        Check if file is an Excel file
+        
+        Args:
+            filename: Name of the file
+            
+        Returns:
+            True if Excel file, False otherwise
+        """
+        excel_extensions = {'.xls', '.xlsx', '.csv'}
+        return self._get_file_extension(filename).lower() in excel_extensions
+    
+    def _is_image_file(self, filename: str) -> bool:
+        """
+        Check if file is an image file
+        
+        Args:
+            filename: Name of the file
+            
+        Returns:
+            True if image file, False otherwise
+        """
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.svg', '.webp', '.ico'}
+        return self._get_file_extension(filename).lower() in image_extensions
     
     def create_folder(self, folder_name: str, parent_path: Optional[str] = None) -> str:
         """
@@ -272,28 +346,60 @@ class FileManager:
         print(f"DEBUG FileManager: Final file_path: '{file_path}'")  # Debug logging
         
         try:
-            # Read file content
-            content = await file.read()
-            
-            # Determine content type
+            try:
+                file.file.seek(0, os.SEEK_END)
+                file_size = file.file.tell()
+                file.file.seek(0)
+            except Exception:
+                file_size = None
+
             content_type = self._get_content_type(file.filename)
-            
-            # Upload to S3
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=file_path,
-                Body=content,
-                ContentType=content_type
+            extra_args = {"ContentType": content_type}
+
+            # Ensure the stream is at the beginning before upload
+            try:
+                file.file.seek(0)
+            except Exception:
+                pass
+
+            if file_size and file_size > self.single_upload_limit:
+                print(
+                    f"DEBUG FileManager: Using multipart upload for '{file.filename}' ({file_size} bytes)"
+                )
+
+            await asyncio.to_thread(
+                self.s3_client.upload_fileobj,
+                file.file,
+                self.bucket_name,
+                file_path,
+                ExtraArgs=extra_args,
+                Config=self.transfer_config
             )
-            
-            # Reset file pointer for any additional operations
-            await file.seek(0)
-            
-            # Return file info
+
+            # Reset file pointer after upload for any subsequent operations
+            try:
+                await file.seek(0)
+            except Exception:
+                try:
+                    file.file.seek(0)
+                except Exception:
+                    pass
+
+            if file_size is None:
+                try:
+                    head_object = await asyncio.to_thread(
+                        self.s3_client.head_object,
+                        Bucket=self.bucket_name,
+                        Key=file_path
+                    )
+                    file_size = head_object.get('ContentLength', 0)
+                except Exception:
+                    file_size = 0
+
             return FileInfo(
                 name=file.filename,
                 path=file_path,
-                size=len(content),
+                size=file_size or 0,
                 content_type=content_type,
                 extension=self._get_file_extension(file.filename),
                 is_folder=False,
@@ -871,52 +977,97 @@ class FileManager:
     
     def preview_file(self, file_path: str, max_size: int = 1024*1024) -> Dict[str, Any]:
         """
-        Get a preview of file content
+        Get a preview of file content with support for Excel, images, and OCR
         
         Args:
             file_path: Path to the file
             max_size: Maximum file size to preview
             
         Returns:
-            File preview
+            File preview with enhanced content type support
         """
         file_path = self._normalize_path(file_path)
         
         try:
             filename = self._get_filename(file_path)
+            file_extension = self._get_file_extension(filename).lower()
             
-            # Check if it's a text file
-            if not self._is_text_file(filename):
-                return {
-                    "error": "Preview not available for this file type",
-                    "content_type": self._get_content_type(filename)
-                }
-            
-            # Download and check size from S3
+            # Download file content
             response = self.s3_client.get_object(
                 Bucket=self.bucket_name,
                 Key=file_path
             )
             content = response['Body'].read()
+            content_type = self._get_content_type(filename)
             
-            if len(content) > max_size:
-                # Return truncated content
-                text_content = content[:max_size].decode('utf-8', errors='ignore')
-                return {
-                    "content": text_content,
-                    "truncated": True,
-                    "size": len(content),
-                    "preview_size": len(text_content),
-                    "content_type": response.get('ContentType', self._get_content_type(filename))
-                }
+            # Handle Excel files
+            if self._is_excel_file(filename):
+                try:
+                    from .excel_processor import ExcelProcessor
+                    preview_text = ExcelProcessor.get_excel_preview(content, filename)
+                    return {
+                        "content": preview_text,
+                        "content_type": content_type,
+                        "file_type": "excel",
+                        "size": len(content),
+                        "preview_type": "structured_data"
+                    }
+                except Exception as e:
+                    return {
+                        "error": f"Failed to process Excel file: {str(e)}",
+                        "content_type": content_type,
+                        "file_type": "excel",
+                        "size": len(content)
+                    }
+            
+            # Handle image files
+            elif self._is_image_file(filename):
+                try:
+                    from .image_processor import ImageProcessor
+                    preview_text = ImageProcessor.get_image_preview(content, filename)
+                    return {
+                        "content": preview_text,
+                        "content_type": content_type,
+                        "file_type": "image",
+                        "size": len(content),
+                        "preview_type": "image_analysis"
+                    }
+                except Exception as e:
+                    return {
+                        "content": f"Image file: {filename}\nSize: {len(content)} bytes\nError processing: {str(e)}",
+                        "content_type": content_type,
+                        "file_type": "image",
+                        "size": len(content)
+                    }
+            
+            # Handle text files
+            elif self._is_text_file(filename):
+                if len(content) > max_size:
+                    truncated_content = content[:max_size].decode('utf-8', errors='ignore')
+                    return {
+                        "content": truncated_content + "\n\n[Content truncated...]",
+                        "content_type": content_type,
+                        "file_type": "text",
+                        "truncated": True,
+                        "original_size": len(content),
+                        "preview_size": len(truncated_content)
+                    }
+                else:
+                    return {
+                        "content": content.decode('utf-8', errors='ignore'),
+                        "content_type": content_type,
+                        "file_type": "text",
+                        "size": len(content)
+                    }
+            
+            # Handle other file types
             else:
-                # Return full content
-                text_content = content.decode('utf-8', errors='ignore')
                 return {
-                    "content": text_content,
-                    "truncated": False,
+                    "error": "Preview not available for this file type",
+                    "content_type": content_type,
+                    "file_type": "binary",
                     "size": len(content),
-                    "content_type": response.get('ContentType', self._get_content_type(filename))
+                    "message": "Download file to view content"
                 }
                 
         except ClientError as e:

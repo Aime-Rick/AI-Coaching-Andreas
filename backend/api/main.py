@@ -122,19 +122,26 @@ app = FastAPI(
     ]
 )
 
-# Performance optimization middleware
+# Performance optimization middleware with enhanced error handling
 @app.middleware("http")
 async def add_performance_headers(request, call_next):
     start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
     
-    # Log slow requests
-    if process_time > 2.0:
-        logging.warning(f"Slow request: {request.method} {request.url} took {process_time:.2f}s")
-    
-    return response
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        
+        # Log slow requests
+        if process_time > 5.0:  # Log requests taking more than 5 seconds
+            logging.warning(f"Slow request: {request.method} {request.url.path} took {process_time:.2f}s")
+        
+        response.headers["X-Process-Time"] = str(process_time)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        logging.error(f"Request failed: {request.method} {request.url.path} after {process_time:.2f}s - {str(e)}")
+        raise
 
 # Add performance middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -150,11 +157,54 @@ app.add_middleware(
 
 # Initialize file manager
 file_manager = FileManager(skip_validation=True)  # Skip S3 validation for development
+REPORTS_FOLDER_PATH = os.getenv("REPORTS_FOLDER_PATH", "Reports")
+
+
+def ensure_reports_folder_exists() -> None:
+    """Ensure the reports folder exists in the storage backend."""
+    reports_path = "/".join(segment for segment in REPORTS_FOLDER_PATH.strip().split("/") if segment)
+
+    if not reports_path:
+        print("⚠️ Reports folder path is empty; skipping automatic creation")
+        return
+
+    if getattr(file_manager, "_development_mode", False):
+        print("ℹ️ Skipping Reports folder creation (file manager running without S3)")
+        return
+
+    if not hasattr(file_manager, "s3_client"):
+        print("ℹ️ Skipping Reports folder creation (S3 client not initialized)")
+        return
+
+    try:
+        info = file_manager.get_file_info(reports_path)
+        if info.get("is_folder", False):
+            return
+        print(f"⚠️ Path '{reports_path}' already exists but is not a folder; skipping automatic creation")
+    except HTTPException as http_exc:
+        if http_exc.status_code != 404:
+            print(f"⚠️ Could not verify Reports folder: {http_exc.detail}")
+            return
+
+        try:
+            parts = reports_path.split("/")
+            clean_parts = [part for part in parts if part]
+            folder_name = clean_parts[-1]
+            parent_path = "/".join(clean_parts[:-1]) or None
+            created_path = file_manager.create_folder(folder_name, parent_path=parent_path)
+            print(f"✅ Created missing '{created_path}' folder on startup")
+        except Exception as creation_error:
+            print(f"⚠️ Failed to create Reports folder automatically: {creation_error}")
+    except Exception as error:
+        print(f"⚠️ Could not verify Reports folder: {error}")
+MAX_PARALLEL_UPLOADS = 20
 
 # Application lifecycle events (using older event handlers for compatibility)
 @app.on_event("startup")
 async def startup_event():
     """Application startup tasks"""
+    ensure_reports_folder_exists()
+
     if cleanup_available and start_cleanup_scheduler:
         try:
             start_cleanup_scheduler()
@@ -303,7 +353,7 @@ async def upload_file(
     path: Optional[str] = Form(None)
 ):
     """
-    Upload a file to the specified path
+    Upload a file to the specified path with enhanced error handling and timeout
     
     Args:
         file: The file to upload
@@ -313,16 +363,39 @@ async def upload_file(
         Upload confirmation with file details
     """
     try:
+        # Add file size validation
+        if hasattr(file.file, 'seek') and hasattr(file.file, 'tell'):
+            file.file.seek(0, 2)  # Seek to end
+            file_size = file.file.tell()
+            file.file.seek(0)  # Reset to beginning
+            
+            # Limit file size to prevent timeouts
+            max_size = 500 * 1024 * 1024  # 500 MB
+            if file_size > max_size:
+                raise HTTPException(
+                    status_code=413, 
+                    detail=f"File too large. Maximum size is {max_size // (1024*1024)} MB"
+                )
+        
         print(f"DEBUG: Upload file - path parameter: '{path}'")  # Debug logging
-        file_info = await file_manager.upload_file(file, path)
+        file_info = await asyncio.wait_for(
+            file_manager.upload_file(file, path),
+            timeout=300.0  # 5 minute timeout
+        )
         print(f"DEBUG: File uploaded to: '{file_info.path}'")  # Debug logging
+        
         return UploadResponse(
             message="File uploaded successfully",
             file_info=file_info
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail="Upload timeout. Try uploading a smaller file.")
     except Exception as e:
+        logging.error(f"Upload error: {str(e)}")
         print(f"DEBUG: Upload error: {str(e)}")  # Debug logging
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        await file.close()
 
 
 @app.post("/files/upload-multiple", response_model=List[UploadResponse], tags=["File Operations"])
@@ -340,17 +413,57 @@ async def upload_multiple_files(
     Returns:
         List of upload confirmations
     """
-    try:
-        results = []
-        for file in files:
-            file_info = await file_manager.upload_file(file, path)
-            results.append(UploadResponse(
-                message="File uploaded successfully",
-                file_info=file_info
-            ))
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
+
+    if len(files) > MAX_PARALLEL_UPLOADS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot upload more than {MAX_PARALLEL_UPLOADS} files at once."
+        )
+
+    semaphore = asyncio.Semaphore(MAX_PARALLEL_UPLOADS)
+
+    async def upload_with_limit(upload_file: UploadFile) -> UploadResponse:
+        async with semaphore:
+            try:
+                file_info = await file_manager.upload_file(upload_file, path)
+                return UploadResponse(
+                    message="File uploaded successfully",
+                    file_info=file_info
+                )
+            finally:
+                await upload_file.close()
+
+    upload_tasks = [upload_with_limit(file) for file in files]
+    results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+    responses: List[UploadResponse] = []
+    errors = []
+
+    for original_file, result in zip(files, results):
+        if isinstance(result, Exception):
+            if isinstance(result, HTTPException):
+                error_message = result.detail
+            else:
+                error_message = str(result)
+            errors.append({
+                "file": original_file.filename or "unknown",
+                "error": error_message
+            })
+        else:
+            responses.append(result)
+
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Failed to upload one or more files",
+                "errors": errors
+            }
+        )
+
+    return responses
 
 
 @app.get("/files", response_model=FileListResponse, tags=["File Management"])
@@ -605,6 +718,126 @@ async def get_storage_stats():
         stats = file_manager.get_storage_stats()
         return stats
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/files/analyze-image", tags=["File Operations"])
+async def analyze_image_with_ai(
+    file_path: str = Form(...),
+    custom_prompt: Optional[str] = Form(None)
+):
+    """
+    Analyze image using AI vision capabilities and OCR
+    
+    Args:
+        file_path: Path to the image file to analyze
+        custom_prompt: Optional custom analysis prompt
+        
+    Returns:
+        AI analysis and extracted text from the image
+    """
+    try:
+        # Download image
+        content, content_type, filename = file_manager.download_file(file_path)
+        
+        # Check if it's an image
+        if not content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File is not an image")
+        
+        # Import image processor and get OpenAI client
+        from backend.files.image_processor import ImageProcessor
+        
+        try:
+            from backend.assistant.utils import get_openai_client
+            client = get_openai_client()
+            
+            # Analyze with AI Vision (if client available)
+            try:
+                ai_analysis = ImageProcessor.analyze_with_openai_vision(
+                    content, client, custom_prompt
+                )
+            except Exception as vision_error:
+                logging.warning(f"AI vision analysis failed: {vision_error}")
+                ai_analysis = "AI vision analysis not available"
+        except ImportError:
+            ai_analysis = "AI vision analysis not available (OpenAI client not configured)"
+        
+        # Extract text with OCR
+        ocr_text = ImageProcessor.extract_text_from_image(content)
+        
+        # Get image metadata
+        image_info = ImageProcessor.get_image_info(content)
+        
+        return {
+            "filename": filename,
+            "file_path": file_path,
+            "ai_analysis": ai_analysis,
+            "extracted_text": ocr_text,
+            "image_info": image_info,
+            "analysis_type": "comprehensive"
+        }
+        
+    except Exception as e:
+        logging.error(f"Image analysis error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/files/debug-ocr", tags=["File Operations"])
+async def debug_ocr_processing(
+    file_path: str = Form(...),
+    save_debug_images: bool = Form(False)
+):
+    """
+    Debug OCR processing to understand why accuracy might be low
+    
+    Args:
+        file_path: Path to the image file to debug
+        save_debug_images: Whether to save intermediate processing images
+        
+    Returns:
+        Detailed OCR analysis with different preprocessing methods
+    """
+    try:
+        # Download image
+        content, content_type, filename = file_manager.download_file(file_path)
+        
+        # Check if it's an image
+        if not content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File is not an image")
+        
+        from backend.files.image_processor import ImageProcessor
+        
+        if save_debug_images:
+            # Debug with image saving
+            debug_results = ImageProcessor.debug_ocr_preprocessing(content)
+            
+            return {
+                "filename": filename,
+                "file_path": file_path,
+                "debug_results": debug_results,
+                "message": "Debug images saved to /tmp/ocr_debug/ for inspection"
+            }
+        else:
+            # Just run OCR analysis without saving images
+            ocr_text = ImageProcessor.extract_text_from_image(content)
+            image_info = ImageProcessor.get_image_info(content)
+            
+            return {
+                "filename": filename,
+                "file_path": file_path,
+                "extracted_text": ocr_text,
+                "image_info": image_info,
+                "text_length": len(ocr_text),
+                "suggestions": [
+                    "Try with save_debug_images=true to see preprocessing steps",
+                    "Check if image resolution is sufficient (>300 DPI recommended)",
+                    "Ensure text is horizontal and not rotated",
+                    "Verify image has good contrast between text and background"
+                ]
+            }
+        
+    except Exception as e:
+        logging.error(f"OCR debug error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 

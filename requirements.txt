@@ -13,3 +13,9 @@ boto3
 botocore
 schedule
 requests
+pandas
+openpyxl
+xlrd
+Pillow
+pytesseract
+opencv-python-headless
