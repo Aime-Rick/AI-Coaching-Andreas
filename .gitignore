@@ -1,4 +1,7 @@
 ai_coaching.db
+ai_coaching.db-shm
+ai_coaching.db-wal
+README.md
 test_setup.py
 CHAT_MEMORY_README.md
 integrated_demo.py
