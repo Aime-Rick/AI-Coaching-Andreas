@@ -28,6 +28,8 @@ from backend.files.models import (
     DeleteRequest,
     UploadResponse
 )
+from backend.cache import cached, cache_key_for_file_list
+from backend.cache import cached, cache_manager, cache_key_for_file_list
 
 # Import assistant functions
 try:
@@ -143,10 +145,7 @@ async def add_performance_headers(request, call_next):
         logging.error(f"Request failed: {request.method} {request.url.path} after {process_time:.2f}s - {str(e)}")
         raise
 
-# Add performance middleware
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-# Add CORS middleware
+# Add CORS middleware (must be first)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -154,6 +153,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add performance middleware (compression)
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)  # Optimized compression
 
 # Initialize file manager
 file_manager = FileManager(skip_validation=True)  # Skip S3 validation for development
@@ -251,6 +253,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Session ID for the chat")
     vector_store_id: Optional[str] = Field(None, description="Optional vector store ID (if not using session-managed store)")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
+    report_context: Optional[str] = Field(None, description="Optional report content to include in the context")
 
 class ChatResponse(BaseModel):
     response: str = Field(..., description="Assistant's response")
@@ -339,6 +342,11 @@ async def create_folder(request: CreateFolderRequest):
             folder_name=request.folder_name,
             parent_path=request.parent_path
         )
+        # Invalidate file list cache after folder creation
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return {
             "message": "Folder created successfully",
             "folder_path": folder_path
@@ -383,7 +391,11 @@ async def upload_file(
             timeout=300.0  # 5 minute timeout
         )
         print(f"DEBUG: File uploaded to: '{file_info.path}'")  # Debug logging
-        
+        # Invalidate cache after upload
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return UploadResponse(
             message="File uploaded successfully",
             file_info=file_info
@@ -462,11 +474,17 @@ async def upload_multiple_files(
                 "errors": errors
             }
         )
+    # Clear cache after bulk uploads
+    try:
+        cache_manager.clear()
+    except Exception:
+        pass
 
     return responses
 
 
 @app.get("/files", response_model=FileListResponse, tags=["File Management"])
+@cached(ttl=60, key_func=lambda path=None, include_hidden=False, sort_by="name", sort_order="asc": cache_key_for_file_list(path or "", sort_by, sort_order))
 async def get_files(
     path: Optional[str] = None,
     include_hidden: bool = False,
@@ -502,6 +520,18 @@ async def get_files(
         return file_list
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/performance", tags=["System"])
+async def performance_stats():
+    """Return lightweight performance stats useful for debugging and tuning"""
+    try:
+        stats = {
+            'cache': cache_manager.stats(),
+            'time': time.time(),
+        }
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/files/search", tags=["File Operations"])
@@ -548,6 +578,10 @@ async def delete_item(request: DeleteRequest):
             path=request.path,
             recursive=request.recursive
         )
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -570,6 +604,10 @@ async def delete_multiple_items(paths: List[str], recursive: bool = False):
         for path in paths:
             result = file_manager.delete_item(path=path, recursive=recursive)
             results.append(result)
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -645,6 +683,10 @@ async def copy_file(source_path: str, destination_path: str):
     """
     try:
         result = file_manager.copy_file(source_path, destination_path)
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -664,6 +706,10 @@ async def move_file(source_path: str, destination_path: str):
     """
     try:
         result = file_manager.move_file(source_path, destination_path)
+        try:
+            cache_manager.clear()
+        except Exception:
+            pass
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -869,7 +915,8 @@ async def chat(request: ChatRequest):
             message=request.message,
             vector_store_id=vector_store_id,
             session_id=request.session_id,
-            user_id=request.user_id
+            user_id=request.user_id,
+            report_context=request.report_context
         )
         return ChatResponse(**result)
     except Exception as e:

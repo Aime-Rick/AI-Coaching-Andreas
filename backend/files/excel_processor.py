@@ -23,42 +23,57 @@ class ExcelProcessor:
         """
         try:
             file_stream = io.BytesIO(file_content)
-            
-            # Handle different file types
+
+            # Use low-memory and dtype inference disabled where possible to speed up parsing
+            read_csv_opts = {
+                'encoding': 'utf-8',
+                'low_memory': True,
+            }
+
+            # Handle different file types with faster reads where possible
             if filename.lower().endswith('.csv'):
-                # Try different encodings for CSV files
+                # Try different encodings for CSV files, but avoid multiple full parses if large
                 try:
                     file_stream.seek(0)
-                    df = pd.read_csv(file_stream, encoding='utf-8')
-                except UnicodeDecodeError:
+                    df = pd.read_csv(file_stream, **read_csv_opts)
+                except Exception:
                     try:
                         file_stream.seek(0)
-                        df = pd.read_csv(file_stream, encoding='latin-1')
-                    except UnicodeDecodeError:
+                        df = pd.read_csv(file_stream, encoding='latin-1', low_memory=True)
+                    except Exception:
                         file_stream.seek(0)
-                        df = pd.read_csv(file_stream, encoding='cp1252')
-            elif filename.lower().endswith('.xlsx'):
-                # Handle XLSX files
-                df = pd.read_excel(file_stream, engine='openpyxl')
-            elif filename.lower().endswith('.xls'):
-                # Handle XLS files
-                df = pd.read_excel(file_stream, engine='xlrd')
+                        df = pd.read_csv(file_stream, encoding='cp1252', low_memory=True)
+            elif filename.lower().endswith('.xlsx') or filename.lower().endswith('.xls'):
+                # For Excel files, only read the first sheet and avoid converters
+                df = pd.read_excel(file_stream, sheet_name=0)
             else:
                 raise ValueError(f"Unsupported file type: {filename}")
-            
+
             # Handle NaN values
             df = df.fillna('')
-            
-            # Convert to JSON-serializable format
+
+            # Build summary without materializing huge lists for very large files
+            total_rows = len(df)
+            columns = df.columns.tolist()
+            memory_usage = df.memory_usage(deep=True).sum()
+
+            # For rows, convert to list only if size is reasonable, otherwise store as sampling
+            if total_rows > 5000:
+                # Keep only a sample for very large files
+                sample_frac = min(5000 / total_rows, 1.0)
+                rows = df.sample(frac=sample_frac, random_state=1).values.tolist()
+            else:
+                rows = df.values.tolist()
+
             data = {
-                'columns': df.columns.tolist(),
-                'rows': df.values.tolist(),
-                'shape': df.shape,
+                'columns': columns,
+                'rows': rows,
+                'shape': (total_rows, len(columns)),
                 'summary': {
-                    'total_rows': len(df),
-                    'total_columns': len(df.columns),
+                    'total_rows': total_rows,
+                    'total_columns': len(columns),
                     'column_types': df.dtypes.astype(str).to_dict(),
-                    'memory_usage': df.memory_usage(deep=True).sum()
+                    'memory_usage': memory_usage
                 }
             }
             
@@ -144,7 +159,9 @@ class ExcelProcessor:
             text_parts.append("")
             
             # Determine how many rows to include
-            total_rows = len(data['rows'])
+            total_rows = data['summary']['total_rows']
+            # rows may be a sampled subset if file is large
+            available_rows = len(data['rows'])
             
             # Smart row limit based on file size and row count
             if max_rows is None:
@@ -169,12 +186,15 @@ class ExcelProcessor:
             text_parts.append(" | ".join(headers))
             text_parts.append("-" * 50)
             
-            if rows_to_include >= total_rows:
-                # Include all rows
+            if rows_to_include >= total_rows or available_rows <= rows_to_include:
+                # Include all currently available rows (may be sampled)
                 for i, row in enumerate(data['rows']):
                     row_str = " | ".join([str(cell) for cell in row])
                     text_parts.append(f"Row {i+1}: {row_str}")
-                text_parts.append(f"[Complete dataset with {total_rows} rows included]")
+                if available_rows < total_rows:
+                    text_parts.append(f"[Sample of {available_rows} rows from total {total_rows} rows included]")
+                else:
+                    text_parts.append(f"[Complete dataset with {total_rows} rows included]")
             else:
                 # Include sample with smart distribution
                 if total_rows > rows_to_include:
@@ -183,7 +203,7 @@ class ExcelProcessor:
                     middle_start = (total_rows - first_chunk) // 2
                     last_chunk = rows_to_include - (2 * first_chunk)
                     
-                    # First rows
+                    # First rows (from available rows sample)
                     for i, row in enumerate(data['rows'][:first_chunk]):
                         row_str = " | ".join([str(cell) for cell in row])
                         text_parts.append(f"Row {i+1}: {row_str}")
@@ -191,7 +211,7 @@ class ExcelProcessor:
                     if middle_start > first_chunk:
                         text_parts.append(f"[... rows {first_chunk + 1} to {middle_start} omitted ...]")
                     
-                    # Middle rows
+                    # Middle rows (sampled)
                     for i, row in enumerate(data['rows'][middle_start:middle_start + first_chunk]):
                         row_str = " | ".join([str(cell) for cell in row])
                         text_parts.append(f"Row {middle_start + i + 1}: {row_str}")
@@ -199,7 +219,7 @@ class ExcelProcessor:
                     if middle_start + first_chunk < total_rows - last_chunk:
                         text_parts.append(f"[... rows {middle_start + first_chunk + 1} to {total_rows - last_chunk} omitted ...]")
                     
-                    # Last rows
+                    # Last rows (from available rows sample)
                     for i, row in enumerate(data['rows'][-last_chunk:]):
                         row_str = " | ".join([str(cell) for cell in row])
                         text_parts.append(f"Row {total_rows - last_chunk + i + 1}: {row_str}")

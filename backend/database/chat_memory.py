@@ -30,8 +30,11 @@ class ChatMemoryService:
         return self.db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
     
     def get_user_sessions(self, user_id: str, limit: int = 50) -> List[ChatSession]:
-        """Get all sessions for a user"""
-        return self.db.query(ChatSession).filter(
+        """Get all sessions for a user (optimized with eager loading)"""
+        from sqlalchemy.orm import joinedload
+        return self.db.query(ChatSession).options(
+            joinedload(ChatSession.messages)
+        ).filter(
             ChatSession.user_id == user_id,
             ChatSession.is_active == True
         ).order_by(ChatSession.updated_at.desc()).limit(limit).all()

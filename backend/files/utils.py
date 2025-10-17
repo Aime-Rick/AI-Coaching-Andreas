@@ -44,13 +44,14 @@ class FileManager:
             skip_validation: Skip bucket validation (useful for development)
         """
         # Optimize transfer configuration for better performance
-        self.single_upload_limit = 100 * 1024 * 1024  # Reduce to 100 MB
+        self.single_upload_limit = 50 * 1024 * 1024  # 50 MB for multipart threshold
         self.transfer_config = TransferConfig(
             multipart_threshold=self.single_upload_limit,
-            multipart_chunksize=16 * 1024 * 1024,  # Reduce chunk size to 16 MB
-            max_concurrency=5,  # Reduce concurrency to avoid timeouts
+            multipart_chunksize=8 * 1024 * 1024,  # 8 MB chunks for better streaming
+            max_concurrency=10,  # Increase concurrency for faster transfers
             use_threads=True,
-            max_bandwidth=50 * 1024 * 1024  # Limit bandwidth to 50 MB/s
+            num_download_attempts=3,  # Retry failed downloads
+            max_io_queue=1000  # Increase I/O queue size
         )
 
         try:

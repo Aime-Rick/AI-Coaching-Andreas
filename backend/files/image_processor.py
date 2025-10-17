@@ -9,6 +9,8 @@ import pytesseract
 import cv2
 import numpy as np
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +93,30 @@ class ImageProcessor:
             processed_images.append(("nlm_denoised", nlm_denoised))
             
             # OCR configurations optimized for different document types
-            ocr_configs = [
-                ('default', '--oem 3 --psm 6'),  # Default configuration
-                ('single_column', '--oem 3 --psm 4'),  # Single column of text
-                ('auto_page', '--oem 3 --psm 3'),  # Fully automatic page segmentation
-                ('sparse_text', '--oem 3 --psm 11'),  # Sparse text
-                ('single_line', '--oem 3 --psm 13'),  # Raw line
-                ('single_word', '--oem 3 --psm 8'),   # Single word
-                ('vertical_text', '--oem 3 --psm 5'),  # Vertical text
-                ('uniform_block', '--oem 3 --psm 7'),  # Uniform block of text
-                ('numbers_only', '--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.,% '),  # Numbers only
+            # Limit number of OCR configurations to avoid excessive CPU and Tesseract calls
+            default_ocr_configs = [
+                ('default', '--oem 3 --psm 6'),
+                ('single_column', '--oem 3 --psm 4'),
+                ('auto_page', '--oem 3 --psm 3'),
+                ('sparse_text', '--oem 3 --psm 11'),
+                ('numbers_only', '--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.,% '),
                 ('alphanumeric', '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:%/- ')
             ]
+
+            # Allow overriding via environment variable to tune performance vs accuracy
+            try:
+                max_tries = int(os.getenv('OCR_MAX_TRIES', str(len(default_ocr_configs))))
+            except Exception:
+                max_tries = len(default_ocr_configs)
+
+            ocr_configs = default_ocr_configs[:max_tries]
             
             best_result = ""
             best_confidence = 0
             best_method = ""
             
             # Try each preprocessing method with each OCR configuration
+            # To reduce latency, process each preprocessing image sequentially but limit OCR attempts
             for img_name, processed_img in processed_images:
                 for config_name, config in ocr_configs:
                     try:
@@ -118,24 +126,30 @@ class ImageProcessor:
                             config=config, 
                             output_type=pytesseract.Output.DICT
                         )
-                        
+
                         # Calculate average confidence for non-empty text
-                        confidences = [int(conf) for conf in data['conf'] if int(conf) > 0]
+                        confidences = [int(conf) for conf in data.get('conf', []) if int(conf) > 0]
                         avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-                        
+
                         # Get the text
                         result = pytesseract.image_to_string(processed_img, config=config)
-                        
+
                         # Score based on text length and confidence
                         score = len(result.strip()) * (avg_confidence / 100)
-                        
+
                         if score > best_confidence and len(result.strip()) > 5:
                             best_result = result
                             best_confidence = score
                             best_method = f"{img_name}+{config_name}"
-                            
-                    except Exception as e:
+                            # Early exit if we have a strong match
+                            if best_confidence > 50:
+                                break
+
+                    except Exception:
                         continue
+                # break early if we found a strong result
+                if best_confidence > 50:
+                    break
             
             # If still no good result, try with original image and simple config
             if len(best_result.strip()) < 10:

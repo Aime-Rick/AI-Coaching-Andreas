@@ -14,10 +14,15 @@ load_dotenv()
 # Initialize database
 create_tables()
 
-llm = ChatOpenAI(model="gpt-5-mini", 
-                 max_completion_tokens=20000, 
-                 api_key=os.getenv("OPENAI_API_KEY"),
-                 temperature=0)
+llm = ChatOpenAI(
+    model="gpt-4.1-nano",  # More cost-effective and faster model
+    max_completion_tokens=16000,  # Reduced from 20000 for faster responses
+    api_key=os.getenv("OPENAI_API_KEY"),
+    temperature=0,
+    timeout=60.0,  # 60 second timeout
+    max_retries=2,  # Retry failed requests
+    request_timeout=60.0
+)
 
 chat_prompt="""
 You are an AI assistant designed to answer user queries using the provided context documents.  
@@ -117,7 +122,7 @@ Bitte erstelle einen strukturierten Coaching-Bericht, der Folgendes enthält:
     }
 }
 
-def generate_chat_response(message: str, vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
+def generate_chat_response(message: str, vector_store_id: str, session_id: Optional[str] = None, user_id: Optional[str] = None, report_context: Optional[str] = None) -> Dict:
     """
     Generate a chat response with memory management.
     
@@ -126,6 +131,7 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
         vector_store_id: ID of the vector store for document context
         session_id: Optional existing session ID (required for session-managed flow)
         user_id: Optional user identifier
+        report_context: Optional report content to include in the context
     
     Returns:
         Dict with response, session_id, and message details
@@ -145,8 +151,21 @@ def generate_chat_response(message: str, vector_store_id: str, session_id: Optio
     # Get chat history for context
     chat_history = memory_service.get_recent_messages(session_id, limit=10)
     
+    # Build system prompt with optional report context
+    system_content = chat_prompt
+    if report_context:
+        system_content = f"""{chat_prompt}
+
+## Additional Context - Generated Report
+
+The following report has been generated from the client's documents. Use this report along with the retrieved documents to provide comprehensive answers:
+
+{report_context}
+
+When answering questions, you can reference information from both the report and the original documents."""
+    
     # Build messages with history
-    messages = [{"role": "system", "content": chat_prompt}]
+    messages = [{"role": "system", "content": system_content}]
     
     # Add chat history
     for hist_msg in chat_history:
